@@ -1,5 +1,6 @@
 /risk_management.csv
 /risk_management.csv.*
+/strategies/backtests
 .env
 .env.*
 .kilo

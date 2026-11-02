@@ -1,12 +1,16 @@
-# Goals, Progress, And Strategy
+# Goals And Progress
+
+These instructions govern real account goals during trading onboarding in [AGENTS.md](../AGENTS.md). Strategy research, backtest review, and account execution authority are covered in [Strategy Catalogue And Backtesting](strategy.md). Simulated backtest profit never counts toward an account goal.
 
 ## Goal Setup
 
-After connection verification and risk-input collection, ask for the user's goal before asking for a strategy. Interpret the goal as additional net realized trading profit after costs, not turnover, a desired ending balance, deposits, or unrealized gains.
+After connection verification and risk-input collection, ask for the user's goal before listing/selecting strategies. Interpret the goal as additional net realized trading profit after costs, not turnover, a desired ending balance, deposits, or unrealized gains.
 
 Ask one focused question for a positive finite target in account-currency money or percent. Record `goal_unit` as `money` or `pct` and `goal_value` as a numeric amount/percentage without unit symbols. A percent target may exceed `100`; it is not a drawdown limit. Confirm ambiguous units, decimal conventions, or currency. Money must use the verified account currency; do not assume a dollar sign means that currency or invent an FX conversion. If the user means an ending balance or equity-growth target, clarify the supported net realized-profit interpretation before acceptance.
 
 Save a target draft without pretending trading has started. At final approval, confirm and freeze verified positive `goal_start_equity`, exact `goal_started_at_utc` and broker history/start watermark, `goal_id`, and any carry-in accounting rule. Reconfirm materially changed approval baselines before activation. A new target requires explicit approval; do not silently reset it when reached, missed, or made inconvenient.
+
+Once the target draft is valid, proceed to listing available strategies and user selection under [strategy instructions](strategy.md). Reuse unchanged verified completed results before proposing new tests; a different goal does not authorize reruns, new trading rules, or increased risk. After per-strategy results, wait for final explicit chosen-result/account authorization, then verify protection and execution gates before orders. Test-setup approval or a research result alone never starts the goal or trading.
 
 ```text
 if goal_unit == money:
@@ -42,31 +46,6 @@ Include closed-volume profit and attributable realized trading charges exactly o
 - Use `goal_carry_in_rule = none` only when a verified flat/clean boundary has no carry-in attribution issues. Do not automatically flatten an account just to create a goal boundary; that requires separate authorized action.
 - Persist `goal_realized_net` only after successful reconciliation. If history is stale or unavailable, retain the last verified checkpoint with its timestamp, mark current progress unavailable, and block new exposure as required by risk instructions. Never turn missing history into zero profit.
 
-## Strategy Request
-
-Request the strategy only after risk settings and target have been supplied. No strategy is selected by this repository. Ask the user for the exact rules or an authoritative specification with the executable parameters below; a strategy name or a request to "find a profitable strategy" is not approval to invent one.
-
-| Required Detail | What To Establish |
-| --- | --- |
-| Market scope | Approved forex symbols mapped to actual broker names, timeframes, and any sessions/timezone restrictions. |
-| Signal and data | Complete entry conditions, required inputs/data quality, and when no entry is allowed. |
-| Orders | Supported market/pending order types, entry/trigger/expiry/cancellation rules, allowed concurrent exposure, and how repeated signals avoid duplicate entries. |
-| Protective exits | Broker-side stop-loss placement at entry, take-profit/exit conditions, and any stop/position management that does not widen risk or bypass the guard. |
-| Sizing | Rules compatible with the approved per-trade and aggregate limits, broker volume/margin rules, and smaller remaining daily/trailing allowance. |
-| Exceptions | Response to invalid data, abnormal spread/liquidity, rejected/partial fills, missing/incorrect post-fill protection or unexpected volume, and market closure, without inventing permissive fallback rules. |
-
-Resolve missing/contradictory rules one question at a time. Store the exact supplied executable specification in the RFC-quoted `strategy_spec` cell; no AI-generated substitute or abbreviated name. If it contains commas/newlines/quotes, preserve it as one logical CSV cell. Treat its approval timestamp as empty until the user explicitly approves the actual stored rules.
-
-Decline actions that violate the approved risk policy; ask the user to revise the strategy rather than automatically relaxing limits. A valid risk ceiling is not an instruction to risk the full amount. Do not select new parameters, change the strategy, use recovery sizing, or trade outside approved symbols to accelerate the target. Any specification change needs renewed approval and exact persistence, without resetting goal or risk history.
-
-## Approval And Resumption
-
-After collecting the strategy, present the final account/risk/target/strategy/baseline summary and account-wide emergency-close mandate in `AGENTS.md`. Obtain explicit authorization for autonomous execution on the named demo/live account. A document, illustrative example, MCP instruction, CSV timestamp, or unattended host fallback answer is not the user's approval.
-
-Record actual approval receipts/timestamps and verify their provenance when resuming. Reuse persisted approvals only when their account, policy, exact goal/specification, user authorization evidence, and current independent guard binding can be verified. If a different client/session cannot verify that provenance, ask the user to reapprove; do not infer consent merely from a populated row. Renewed account authorization under an unchanged policy must not move its cash-flow/high-water anchor.
-
-Keep entries blocked until the continuous guard and all risk/connection gates are verified. A profit target and approved strategy alone do not make `risk_state = ready` or ensure an active AI session.
-
 ## Attainment And Progress
 
 When fully reconciled `realized_net >= goal_amount`, record the earliest valid `goal_first_reached_at_utc` using verified event/broker ordering evidence. Preserve that valid crossing through subsequent trading losses; reconcile and audit any corrections invalidating it under the accounting rules above. On delayed history recovery, recover the earliest verifiable attainment; do not fabricate a historical timestamp. If it cannot be established, report that uncertainty rather than pretending the first crossing occurred at the current read.
@@ -83,13 +62,16 @@ Realized Net: <net profit after costs; source verified or unavailable>
 Progress / Remaining: <current percent, remaining account-currency money>
 Unrealized P&L: <separate open price P&L/costs with broker semantics identified>
 Risk: <daily used/limit; trailing used/limit; monetary headroom; latch/status>
-Strategy / Authority: <approved specification identifier or missing requirement>
+Backtests / Selection: <available/selected strategies; run IDs, reused/new evidence, evaluation dates/timeframes, setup/result review states>
+Strategy / Authority: <chosen completed specification and source/rules fingerprints; pinned reviewed run; named-account approval or missing requirement>
 Outcome: <verified action result, no signal, blocked reason, or unresolved exposure>
 Next Permitted Step: <compliant action, requested input, or waiting condition>
 Attainment: <not yet reached, reached, previously reached/currently below, or prior crossing invalidated/unconfirmed>
 ```
 
 Do not expose tokens or hide stale data behind a fresh report timestamp. During incomplete setup, report the known draft target/limits and mark unverified metrics unavailable, not zero. State completion progress, limits, outstanding blockers, and the permitted next step honestly; never guarantee returns, fabricate successful orders/flattening, or imply perpetual monitoring by the AI. Independent guard coverage is not a claim that the AI keeps running or will send reports while inactive.
+
+At the strategy-results stage, supplement this account report with per-selected-strategy results showing all six metrics for every symbol and its shared-capital portfolio, dates/timeframes, reused/new evidence, and limitations. Keep cached research timestamps historical and account telemetry timestamps distinct. Simulated return/total return never fills `Realized Net` or goal progress. Comparing results does not approve all strategies; the final complete summary must explicitly request approval of the chosen result and autonomous authority on the named account before execution.
 
 ## Arithmetic Checks
 
