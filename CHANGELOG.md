@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.3.0] - 2026-11-03
+
+### Removed
+
+- The strategy catalogue, `instructions/strategy.md`, and the entire `strategies/` tree including archived backtest runs, methods, reports and temporary working directories.
+- All backtesting, evidence-binding, suitability-review, member/composite-playbook and bounded-research-bundle requirements.
+
+### Changed
+
+- Ace now analyses live MT5 MCP market data, discovers the broker's own symbol universe (majors, major minors, metals, oil and commodities, indices, synthetics), and places orders directly to work toward the account-wide target.
+- Budget and target remain account-wide and shared by every order; Ace plans multiple independent orders with protective stops instead of committing the allowance to one trade, while still requiring stressed open-plus-pending risk strictly below remaining headroom.
+- The mandate is now the approved broker symbol universe plus freshness, safety-margin and permission fields; entry actions require a market `analysis_ref`, broker checks and a protective stop rather than playbook/member attestations.
+- The observed-only trailing budget, target latch, whole-account cancellation/closure, persistent latches and the single named-account approval are unchanged.
+- README and instruction files no longer describe research-only, strategy or backtest workflows.
+
+## [1.2.0] - 2026-11-03
+
+### Added
+
+- Agent-invoked standard-library Python/SQLite checker at `scripts/account_check.py`, with `draft`, `activate`, `check`, `prepare`, `resolve`, and `status` commands and repository-root `ace_state.sqlite3` as the sole local account checkpoint. The helper performs no networking or trading and is not a continuous guard/service.
+
+### Changed
+
+- Replace required user-supplied strategy selection with Ace-generated adaptive playbooks based on verified market conditions, regimes, sessions, and instrument types; autonomous switching stays inside frozen approved rules.
+- Extend eligibility to broker-supported forex, metals, indices, commodities, and crypto with verified economics, costs, calendars, margin and minimum-lot feasibility against actual account equity and remaining monetary headroom.
+- Make a positive account-currency monetary trailing-loss budget and profit target the only user-supplied trading settings. Apply them to the full named account, including manual exposure, without percentage-risk or separate capital-allocation questions.
+- Trail the highest cash-flow-adjusted equity actually observed while the AI is active by a fixed monetary allowance. Use equity gain since the approved goal baseline, adjusted for external cash flows and incremental closing costs, for target progress; disclose missed peaks/breaches, inactivity and overshoots without promising a cap or return.
+- At an observed budget breach including equality, or target trigger, latch off new risk, cancel all account pending entries and close all account positions, including manual exposure. Preserve protective orders until safely closed, verify outcomes, and keep stops latched across reconnects/recovery or final profit below target; same-policy goals preserve risk history.
+- Require genuine member and selector/shared-capital composite evidence, all six after-cost metrics, regime/session validation, and exact result/playbook/named-account authorization. Reuse unchanged runs; mark the catalogue historical and discover actual sources rather than infer current absence from old records.
+- Delegate one frozen first onboarding research bundle under the actual request, at most three members and one composite across at most three preselected symbols, retaining at least two symbols per test and existing history windows. Record `delegated-onboarding-request` authority instead of inventing setup approval; preserve standalone setup/review boundaries and prohibit hidden retries or optimization.
+- Model the selected observation cadence, broker stops, finite inactivity/stress scenarios and whole-account monetary exits in research; neither a profitable result nor delegated research authority approves trading.
+- After one final named-account approval covering exact results/playbook, baselines, monetary definitions, both closure mandates and observed-only limitations, permit real documented MCP market/pending orders and approved management after fresh helper preparation, without separate per-trade confirmation. Preserve client permissions, intended-account verification, broker stops/sizing/margin/costs, one local writer and durable pre-dispatch intent/outcome reconciliation; local SQLite is not atomic broker gating.
+- Retire and discard root `risk_management.csv` and `risk_management.csv.*` account backups without import, copied approvals/peaks, or future CSV detection/migration/setup gates. Fresh SQLite state is unconfigured; preserve research CSV evidence and existing SQLite anchors, latches, receipts and unresolved intents on resumption. Retiring local records neither closes broker exposure nor authorizes trading.
+
 ## [1.1.0] - 2026-11-02
 
 ### Added

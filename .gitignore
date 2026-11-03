@@ -1,6 +1,10 @@
 /risk_management.csv
 /risk_management.csv.*
-/strategies/backtests
+/ace_state.sqlite3
+/ace_state.sqlite3-*
+/ace_state.sqlite3.*
+__pycache__/
+*.py[cod]
 .env
 .env.*
 .kilo
