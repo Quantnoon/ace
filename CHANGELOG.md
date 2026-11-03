@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## [1.3.0] - 2026-11-03
+
+### Removed
+
+- The strategy catalogue, `instructions/strategy.md`, and the entire `strategies/` tree including archived backtest runs, methods, reports and temporary working directories.
+- All backtesting, evidence-binding, suitability-review, member/composite-playbook and bounded-research-bundle requirements.
+
+### Changed
+
+- Ace now analyses live MT5 MCP market data, discovers the broker's own symbol universe (majors, major minors, metals, oil and commodities, indices, synthetics), and places orders directly to work toward the account-wide target.
+- Budget and target remain account-wide and shared by every order; Ace plans multiple independent orders with protective stops instead of committing the allowance to one trade, while still requiring stressed open-plus-pending risk strictly below remaining headroom.
+- The mandate is now the approved broker symbol universe plus freshness, safety-margin and permission fields; entry actions require a market `analysis_ref`, broker checks and a protective stop rather than playbook/member attestations.
+- The observed-only trailing budget, target latch, whole-account cancellation/closure, persistent latches and the single named-account approval are unchanged.
+- README and instruction files no longer describe research-only, strategy or backtest workflows.
+
+## [1.2.0] - 2026-11-03
 
 ### Added
 

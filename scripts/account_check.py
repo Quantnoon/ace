@@ -113,10 +113,7 @@ def strings(value, field):
 def mandate(value):
     if not isinstance(value, dict):
         raise CheckError("invalid_mandate")
-    result = {key: text(value.get(key), key) for key in
-              ("playbook_id", "playbook_spec", "evidence_ref")}
-    result["members"] = strings(value.get("members"), "members")
-    result["symbols"] = strings(value.get("symbols"), "symbols")
+    result = {"symbols": strings(value.get("symbols"), "symbols")}
     age = value.get("max_snapshot_age_seconds")
     if type(age) is not int or age <= 0:
         raise CheckError("invalid_max_snapshot_age_seconds")
@@ -348,13 +345,13 @@ def action(value, state, metrics, errors):
     if result["kind"] == "entry":
         if state["loss_latched_at"] or state["target_latched_at"] or errors or metrics is None:
             raise CheckError("entry_blocked")
-        for key in ("strategy_eligible", "evidence_verified", "broker_checks_passed", "protective_stop_in_request"):
+        for key in ("broker_checks_passed", "protective_stop_in_request"):
             if value.get(key) is not True:
                 raise CheckError("missing_" + key)
-        for key, allowed in (("symbol", "symbols"), ("member_id", "members")):
-            if value.get(key) not in state["mandate"][allowed]:
-                raise CheckError("unapproved_" + key)
-            result[key] = value[key]
+        result["analysis_ref"] = text(value.get("analysis_ref"), "analysis_ref")
+        if value.get("symbol") not in state["mandate"]["symbols"]:
+            raise CheckError("unapproved_symbol")
+        result["symbol"] = value["symbol"]
         result["signal_id"] = text(value.get("signal_id"), "signal_id")
         risk = money(value.get("risk"), "proposed_risk", positive=True)
         margin = money(value.get("margin"), "proposed_margin", nonnegative=True)
@@ -586,7 +583,7 @@ def transact(connection, command, request, now):
                             other = decode(raw, exact_numbers=False)
                             if other["kind"] == "reduce" and set(other["tickets"]) & set(proposed["tickets"]):
                                 raise CheckError("overlapping_reduction")
-                    signal_key = encode([state["goal"]["id"], proposed["member_id"], proposed["signal_id"]]) if proposed["kind"] == "entry" else None
+                    signal_key = encode([state["goal"]["id"], proposed["symbol"], proposed["signal_id"]]) if proposed["kind"] == "entry" else None
                     if connection.execute("SELECT 1 FROM intents WHERE id = ? OR signal_key = ?", (proposed["id"], signal_key)).fetchone():
                         raise CheckError("duplicate_action_or_signal")
                     proposed.update(policy_id=state["policy"]["id"], goal_id=state["goal"]["id"],

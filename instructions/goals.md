@@ -1,18 +1,18 @@
 # Goals And Progress
 
-These instructions govern real account goals under [AGENTS.md](../AGENTS.md). [Strategy research](strategy.md) uses its own report; simulated profit never counts toward account progress. Maintenance is not account setup, a monetary goal or trading approval.
+These instructions govern real account goals under [AGENTS.md](../AGENTS.md). Analysis alone never counts toward account progress. Maintenance is not account setup, a monetary goal or trading approval.
 
 ## Budget And Target
 
-The only user-supplied trading settings are a positive monetary trailing-loss **budget** and a positive monetary **target** in the verified account currency. Accept them together, for example "risk only 5 USD and make an extra 15 USD". Ask only for missing/ambiguous amounts or currency, not percentages, allocated capital, strategy or routine symbol choices. Account facts come from actual MT5 MCP responses.
+The only user-supplied trading settings are a positive monetary trailing-loss **budget** and a positive monetary **target** in the verified account currency. Accept them together, for example "risk only 5 USD and make an extra 15 USD". Ask only for missing/ambiguous amounts or currency, not percentages, allocated capital or routine symbol choices. Account facts come from actual MT5 MCP responses.
 
 The target is additional cash-flow-adjusted account equity gain from the approved goal baseline, including floating P&L and estimated incremental closing costs. It is not turnover, deposits, starting capital, a desired ending balance, or a sum of closed-trade profits that ignores open losses. The allowance does not create a virtual subaccount. All manual and other-origin exposure/costs count.
 
-Save inputs as unapproved `draft` state through the [helper contract](risk-management.md). During onboarding, Ace assesses affordability and generates/selects suitable hypotheses. Reuse verified evidence or execute the one bounded first research bundle under the actual onboarding request; no separate setup question for that bundle. Standalone research retains its setup/review boundary. New results are unreviewed, and failed suitability means no trading.
+Save inputs as unapproved `draft` state through the [helper contract](risk-management.md). During onboarding, Ace verifies instrument economics, current market conditions, costs and affordability, and plans multiple independent orders rather than one all-in trade. That analysis is read-only until the named-account approval below; it never authorizes orders by itself.
 
-Present one final named-account confirmation of the exact results/playbook, account identity, amounts, baseline values/source timestamps, observed-only trailing definition, normal management and account-wide cancellation/closure at either trigger. Disclose that only active AI snapshots check the monetary limits; missed peaks/breaches, gaps and delayed closes can overshoot them. A provided target or profitable backtest is not that approval.
+Present one final named-account confirmation of the account identity, amounts, baseline values/source timestamps, observed-only trailing definition, approved symbol universe, current market read, normal management and account-wide cancellation/closure at either trigger. Disclose that only active AI snapshots check the monetary limits; missed peaks/breaches, gaps and delayed closes can overshoot them. A provided target or an optimistic analysis is not that approval.
 
-After real approval, activate/reconcile using the frozen reviewed baseline plus a separate fresh post-approval snapshot. Preserve the baseline while the user reviews it; intervening equity/cash-flow changes are checked, not silently rebased. An eligible approved order with a successful fresh preparation may be placed through MT5 MCP without per-trade confirmation, subject to actual client/broker permissions. No compliant signal or affordable minimum lot means no trade. There is no target deadline, forced trade volume, automatic risk increase or promised return.
+After real approval, activate/reconcile using the reviewed baseline plus a separate fresh post-approval snapshot. Preserve the baseline while the user reviews it; intervening equity/cash-flow changes are checked, not silently rebased. An eligible approved order with a successful fresh preparation may be placed through MT5 MCP without per-trade confirmation, subject to actual client/broker permissions. No compliant signal or affordable minimum lot means no trade. There is no target deadline, forced trade volume, automatic risk increase or promised return.
 
 ## Equity-Based Progress
 
@@ -42,7 +42,7 @@ On the first **actually observed and verified** `estimated_net_gain >= target`, 
 
 Under the final approved whole-account mandate:
 
-1. Stop new entries and other risk increases immediately, including automatic member switches that would add exposure.
+1. Stop new entries and other risk increases immediately, including any instrument switch that would add exposure.
 2. Cancel all pending entry orders, including manual/other-origin entries, using the actual documented MCP tool. Preserve necessary protective orders until their positions are safely closed.
 3. Close all account positions including manual exposure using true position-close/reduce semantics. An opposite entry may hedge or reverse rather than close. Record intended actions before dispatch where the helper is available; an unavailable helper must not delay previously authorized identity-verified safety reductions.
 4. Read back cancellations, partial/late fills, remaining orders, volume, stops and uncertain requests. Close remaining verified exposure under the same mandate, without blindly duplicating an uncertain close. Reconcile orphan orders only after their protection is no longer needed.
@@ -50,7 +50,7 @@ Under the final approved whole-account mandate:
 
 The stop stays latched after slippage, rejected/partial closes, equity recovery, profit falling below target, later cost corrections, new days and reconnects. Do not automatically trade to make up a shortfall. If a loss stop is also latched, loss handling takes precedence; neither latch hides the other.
 
-Before a trigger, positions retain their original approved exits/ownership except for an explicitly approved transition. No-entry regimes or target/loss latches do not prevent identity-verified, previously authorized protective management and reductions. After a whole-account trigger, that cancellation/closure mandate overrides normal member holding periods.
+Before a trigger, positions retain their original approved exits/ownership except for an explicitly approved transition. No-entry regimes or target/loss latches do not prevent identity-verified, previously authorized protective management and reductions. After a whole-account trigger, that cancellation/closure mandate overrides normal position holding periods.
 
 ## Final Result And Resume
 
@@ -58,7 +58,7 @@ While exposure, costs or requests remain unresolved, report target-triggered/clo
 
 For example, a target of `15` may trigger on estimated liquidation gain `15`, then close at actual net `14.7`. Report trigger observed, closure verified, final net `14.7`, shortfall `0.3`, and **stopped**. Do not falsely claim the final goal was met or clear the stop because the estimate changed. Later charges/corrections update the reported result, not the existing latch.
 
-New-goal activation requires explicit approval of that new goal and its frozen baseline, settled previous exposure/intents/costs, fresh post-approval reconciliation and unchanged risk policy under the helper contract. It preserves the observed risk peak and original policy/flow anchor. Explicit playbook `reauthorize` changes reviewed strategy authority without resetting either monetary baseline or any latch. A loss latch requires an explicitly approved replacement risk policy and baseline reset; a new target, strategy approval or local flag cannot release it. Never silently replace rules, evidence, symbols or policy limits to pursue the target.
+New-goal activation requires explicit approval of that new goal and its reviewed baseline, settled previous exposure/intents/costs, fresh post-approval reconciliation and unchanged risk policy under the helper contract. It preserves the observed risk peak and original policy/flow anchor. Explicit mandate `reauthorize` changes the approved analysis/symbol authority without resetting either monetary baseline or any latch. A loss latch requires an explicitly approved replacement risk policy and baseline reset; a new target, mandate reauthorization or local flag cannot release it. Never silently replace symbols, analysis or policy limits to pursue the target.
 
 No process is installed to run checks or close positions while the AI is inactive. Broker stop-losses remain essential but cannot guarantee the monetary cap or target. A stop failure, stale data, missing tool/permission or unresolved exposure must be reported honestly with the next safe permitted step.
 
@@ -70,14 +70,14 @@ Every trading response, including onboarding questions, errors, blocked decision
 Account / As Of: <login + server; demo/live; currency; connection; verified source times>
 Budget / Risk: <budget; observed adjusted peak; drawdown; remaining money; stop floor; loss latch>
 Target / Progress: <target; goal-start equity/time; estimated net gain; incremental close costs; progress/remaining>
-Authority / Strategy: <draft/approved; exact playbook/member/composite evidence; current selection or no-entry reason>
+Authority / Analysis: <draft/approved; approved symbol universe; current market read and its invalidation conditions, or no-entry reason>
 Stop / Exposure: <target/loss latch; open/pending exposure; unresolved intent; closure pending or verified>
 Outcome / Next: <actual MCP result or blocker; final net/shortfall when verified; next permitted action>
 ```
 
-Do not substitute the report-generation time for stale source timestamps, invent zero balances or assume a missing database is approved. Label the last actual snapshot/check; do not imply continuing monitoring, execution or reporting while inactive. A simulated return or saved backtest is never current account profit.
+Do not substitute the report-generation time for stale source timestamps, invent zero balances or assume a missing database is approved. Label the last actual snapshot/check; do not imply continuing monitoring, execution or reporting while inactive.
 
-At the results/final-approval stage, supplement the compact report with the complete stored English member/controller specification, exact sources/rules/run/evidence binding, new/reused status, dates/timeframes, all six after-cost metrics for each symbol/member/composite portfolio, regime/session samples, costs/exposure, suitability results and limitations. One full question may review those exact results and authorize the named-account mandate only when it explicitly requests both.
+At the final-approval stage, supplement the compact report with the approved broker symbol universe and the specific market reads that justify the planned orders: timeframes and source timestamps, direction or range, volatility, spread relative to planned stops, session, invalidation levels, instrument economics, costs and margin, planned order count, and the total stressed risk against the remaining budget. One full question may authorize the named-account mandate only when it explicitly requests both that account and those limits.
 
 ## Synthetic Workflow Checks
 

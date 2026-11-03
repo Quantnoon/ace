@@ -5,7 +5,6 @@
 /ace_state.sqlite3.*
 __pycache__/
 *.py[cod]
-/strategies/backtests
 .env
 .env.*
 .kilo

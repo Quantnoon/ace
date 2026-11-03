@@ -21,10 +21,7 @@ from scripts import account_check as checker
 
 ACCOUNT = {"login": "synthetic-001", "server": "synthetic-broker", "type": "demo", "currency": "USD"}
 MANDATE = {
-    "playbook_id": "synthetic-playbook-v1",
-    "playbook_spec": "Synthetic test rules only; never live evidence or approval.\nTwo fictional members with frozen entries and exits.",
-    "evidence_ref": "synthetic-reviewed-evidence",
-    "members": ["trend", "range"], "symbols": ["EURUSD", "GBPUSD"],
+    "symbols": ["EURUSD", "GBPUSD", "XAUUSD"],
     "max_snapshot_age_seconds": 60, "safety_margin": "0.5",
     "allow_entries": True, "allow_management": True, "close_all_on_loss": True,
     "close_all_on_target": True, "accept_observed_only": True,
@@ -90,8 +87,8 @@ class AccountCheckTests(unittest.TestCase):
         result = {"id": action_id, "kind": "entry", "tool": "synthetic_mcp.place_order",
                   "authority_ref": "synthetic-final-approval", "tool_permission": True,
                   "policy_id": state["policy"]["id"], "goal_id": state["goal"]["id"],
-                  "symbol": "EURUSD", "member_id": "trend", "signal_id": "signal-" + action_id,
-                  "risk": risk, "margin": "10", "strategy_eligible": True, "evidence_verified": True,
+                  "symbol": "EURUSD", "analysis_ref": "synthetic-h1-trend-read", "signal_id": "signal-" + action_id,
+                  "risk": risk, "margin": "10",
                   "broker_checks_passed": True, "protective_stop_in_request": True,
                   "parameters": {"symbol": "EURUSD", "volume": Decimal("0.01"), "sl": Decimal("1.09"), "side": "buy"}}
         result.update(changes)
@@ -157,7 +154,7 @@ class AccountCheckTests(unittest.TestCase):
 
     def test_baseline_approval_and_required_mandate(self):
         self.draft(budget="5", target="15", mandate=MANDATE)
-        for field in ("close_all_on_loss", "close_all_on_target", "accept_observed_only", "playbook_spec", "evidence_ref"):
+        for field in ("close_all_on_loss", "close_all_on_target", "accept_observed_only", "symbols", "safety_margin"):
             with self.subTest(field=field):
                 config = copy.deepcopy(MANDATE)
                 config.pop(field)
@@ -318,7 +315,7 @@ class AccountCheckTests(unittest.TestCase):
         for changes, code in (({"risk": "5"}, "insufficient_headroom"),
                               ({"margin": "101"}, "insufficient_margin"),
                               ({"symbol": "UNAPPROVED"}, "unapproved_symbol"),
-                              ({"member_id": "UNAPPROVED"}, "unapproved_member_id"),
+                              ({"analysis_ref": ""}, "invalid_analysis_ref"),
                               ({"tool_permission": False}, "missing_tool_permission"),
                               ({"broker_checks_passed": False}, "missing_broker_checks_passed"),
                               ({"protective_stop_in_request": False}, "missing_protective_stop_in_request"),
@@ -412,11 +409,11 @@ class AccountCheckTests(unittest.TestCase):
         self.assertEqual(persisted["volume"], 0.01)
         self.assertEqual(persisted["sl"], 1.09)
 
-    def test_saved_proposal_binding_and_rule_reauthorization_preserve_money(self):
+    def test_saved_proposal_binding_and_mandate_reauthorization_preserve_money(self):
         self.start()
         self.call("check", snapshot=self.snap("104"))
         old = self.state()
-        changed = dict(MANDATE, playbook_id="synthetic-v2", playbook_spec="Synthetic revised frozen rules, independently reviewed.")
+        changed = dict(MANDATE, symbols=["EURUSD", "GBPUSD", "XAUUSD", "USDJPY"])
         denied = self.activate_again("reauthorize", self.snap("103"), mandate=changed)
         self.assertIn("mandate_differs_from_saved_proposal", denied["reason_codes"])
         self.draft(mandate=changed)
