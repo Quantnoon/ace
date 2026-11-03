@@ -1,90 +1,92 @@
 # Goals And Progress
 
-These instructions govern real account goals during trading onboarding in [AGENTS.md](../AGENTS.md). Strategy research, backtest review, and account execution authority are covered in [Strategy Catalogue And Backtesting](strategy.md). Simulated backtest profit never counts toward an account goal.
+These instructions govern real account goals under [AGENTS.md](../AGENTS.md). [Strategy research](strategy.md) uses its own report; simulated profit never counts toward account progress. Maintenance is not account setup, a monetary goal or trading approval.
 
-## Goal Setup
+## Budget And Target
 
-After connection verification and risk-input collection, ask for the user's goal before listing/selecting strategies. Interpret the goal as additional net realized trading profit after costs, not turnover, a desired ending balance, deposits, or unrealized gains.
+The only user-supplied trading settings are a positive monetary trailing-loss **budget** and a positive monetary **target** in the verified account currency. Accept them together, for example "risk only 5 USD and make an extra 15 USD". Ask only for missing/ambiguous amounts or currency, not percentages, allocated capital, strategy or routine symbol choices. Account facts come from actual MT5 MCP responses.
 
-Ask one focused question for a positive finite target in account-currency money or percent. Record `goal_unit` as `money` or `pct` and `goal_value` as a numeric amount/percentage without unit symbols. A percent target may exceed `100`; it is not a drawdown limit. Confirm ambiguous units, decimal conventions, or currency. Money must use the verified account currency; do not assume a dollar sign means that currency or invent an FX conversion. If the user means an ending balance or equity-growth target, clarify the supported net realized-profit interpretation before acceptance.
+The target is additional cash-flow-adjusted account equity gain from the approved goal baseline, including floating P&L and estimated incremental closing costs. It is not turnover, deposits, starting capital, a desired ending balance, or a sum of closed-trade profits that ignores open losses. The allowance does not create a virtual subaccount. All manual and other-origin exposure/costs count.
 
-Save a target draft without pretending trading has started. At final approval, confirm and freeze verified positive `goal_start_equity`, exact `goal_started_at_utc` and broker history/start watermark, `goal_id`, and any carry-in accounting rule. Reconfirm materially changed approval baselines before activation. A new target requires explicit approval; do not silently reset it when reached, missed, or made inconvenient.
+Save inputs as unapproved `draft` state through the [helper contract](risk-management.md). During onboarding, Ace assesses affordability and generates/selects suitable hypotheses. Reuse verified evidence or execute the one bounded first research bundle under the actual onboarding request; no separate setup question for that bundle. Standalone research retains its setup/review boundary. New results are unreviewed, and failed suitability means no trading.
 
-Once the target draft is valid, proceed to listing available strategies and user selection under [strategy instructions](strategy.md). Reuse unchanged verified completed results before proposing new tests; a different goal does not authorize reruns, new trading rules, or increased risk. After per-strategy results, wait for final explicit chosen-result/account authorization, then verify protection and execution gates before orders. Test-setup approval or a research result alone never starts the goal or trading.
+Present one final named-account confirmation of the exact results/playbook, account identity, amounts, baseline values/source timestamps, observed-only trailing definition, normal management and account-wide cancellation/closure at either trigger. Disclose that only active AI snapshots check the monetary limits; missed peaks/breaches, gaps and delayed closes can overshoot them. A provided target or profitable backtest is not that approval.
 
-```text
-if goal_unit == money:
-    goal_amount = goal_value
-if goal_unit == pct:
-    goal_amount = goal_start_equity * goal_value / 100
+After real approval, activate/reconcile using the frozen reviewed baseline plus a separate fresh post-approval snapshot. Preserve the baseline while the user reviews it; intervening equity/cash-flow changes are checked, not silently rebased. An eligible approved order with a successful fresh preparation may be placed through MT5 MCP without per-trade confirmation, subject to actual client/broker permissions. No compliant signal or affordable minimum lot means no trade. There is no target deadline, forced trade volume, automatic risk increase or promised return.
 
-realized_profit_pct = 100 * realized_net / goal_start_equity
-progress_pct = 100 * realized_net / goal_amount
-remaining_amount = max(0, goal_amount - realized_net)
-```
-
-The denominator and converted `goal_amount` remain fixed after approval, including after deposits/withdrawals, equity changes, day rollover, restarts, or first attainment. Do not clamp negative progress to zero or progress above `100` to `100`. Show remaining money and percentage progress in the report; a loss increases the remaining amount.
-
-These goals have no promised completion date. A user deadline never permits greater risk, forced trades, or invented returns. If the approved strategy has no signal or cannot fit current risk headroom, report that constraint and wait for a compliant signal.
-
-## Realized-Profit Accounting
-
-Use verified MT5/broker deal history as authority, not a cached CSV number, account balance change, AI estimate, or open-position mark. Confirm whether broker fields are gross or already net and their fee/sign/booking semantics before summing them.
+## Equity-Based Progress
 
 ```text
-realized_net = sum(in-scope realized trading profit)
-             + sum(in-scope signed realized commission, swap, and fees)
+E = current broker account equity, including floating valuation and booked costs
+E0 = fixed verified equity at goal approval/activation
+C_goal = net external capital flows since this goal's anchor
+K = estimated incremental closing charges/slippage not already reflected in E
+
+estimated_net_gain = E - C_goal - E0 - K
+progress_pct = 100 * estimated_net_gain / target
+remaining_amount = max(0, target - estimated_net_gain)
+target_trigger = estimated_net_gain >= target
 ```
 
-Include closed-volume profit and attributable realized trading charges exactly once. Costs booked on an in-scope opening deal reduce net progress when realized even if the position remains open; do not deduct the same entry cost again at partial/final closure. Exclude unclosed price gains/losses from this realized metric and report them separately. If costs are already netted into profit, do not add/subtract them twice. Distinguish capitalized/unrealized swap from actually booked swap using the documented broker semantics.
+Keep `E0`, target and original history boundary fixed for that approved goal. A same-policy new goal gets its own goal/cash-flow anchor without resetting the risk policy's peak or loss latch. Do not clamp negative progress or progress above 100%; do not hide losses behind display rounding.
 
-- Exclude deposits, withdrawals, transfers, nontrading capital credits, and earlier out-of-scope realized outcomes. Classification must match the risk cash-flow ledger; ambiguous events must be resolved, not counted as profit or relabeled to hide loss.
-- Preserve the original goal-start boundary alongside the latest reconciled cursor. Use unique broker deal/event IDs, reliable time/ordering semantics, overlapping reads and deduplication where needed; multiple fills or shared timestamps must not disappear or be counted twice.
-- Reconcile partial closes, entry/exit costs, financing, later corrections, and deferred cost postings against the applicable goal scope. Do not advance the checkpoint past unaccounted/unknown events or claim exact attainment while required cost/history evidence is missing.
-- Distinguish subsequent real losses from corrections to earlier outcomes or late charges attributable to an earlier crossing. If corrected history invalidates a recorded crossing, preserve its prior evidence/reason in an ignored checkpoint backup and the accounting audit, recompute the earliest valid crossing, and replace or clear `goal_first_reached_at_utc` accordingly. Report the earlier attainment as invalidated/unconfirmed, not a still-valid historical success. Retain a valid crossing when later independent trades lose money.
-- If existing positions, pending orders, or unresolved/deferred costs overlap goal approval, disclose them and ask for an explicit carry-in attribution rule. Explain full later closed outcomes versus incremental outcomes from verified goal-start marks/cost allocation if applicable. Record the complete user-approved rule and required baseline/IDs in `goal_carry_in_rule` and the checkpoint. If reliable attribution cannot be implemented from available broker data, block activation rather than guess.
-- Use `goal_carry_in_rule = none` only when a verified flat/clean boundary has no carry-in attribution issues. Do not automatically flatten an account just to create a goal boundary; that requires separate authorized action.
-- Persist `goal_realized_net` only after successful reconciliation. If history is stale or unavailable, retain the last verified checkpoint with its timestamp, mark current progress unavailable, and block new exposure as required by risk instructions. Never turn missing history into zero profit.
+Obtain account equity/balance and complete relevant broker history from MCP. Classify external deposits/withdrawals/credits using actual broker semantics, paginate/deduplicate events and reconcile coverage with the account observation. Booked commission, spread valuation, swaps and fees already included in equity are not subtracted again. Unknown costs, missing conversion/history or a deposit not yet represented in the flow ledger make current progress unavailable, not zero or a verified crossing.
 
-## Attainment And Progress
+Existing floating profit at goal activation is already inside `E0`; it is not extra goal profit merely because the position later closes. The fixed interpretation is incremental whole-account mark-to-market gain from that baseline, not a new user carry-in accounting questionnaire. Preserve actual start marks/watermark and deferred-cost evidence; if that accounting cannot be verified, block additions rather than invent attribution.
 
-When fully reconciled `realized_net >= goal_amount`, record the earliest valid `goal_first_reached_at_utc` using verified event/broker ordering evidence. Preserve that valid crossing through subsequent trading losses; reconcile and audit any corrections invalidating it under the accounting rules above. On delayed history recovery, recover the earliest verifiable attainment; do not fabricate a historical timestamp. If it cannot be established, report that uncertainty rather than pretending the first crossing occurred at the current read.
+The Python helper stores a full deduplicated external-flow ledger from an immutable history anchor and separate cash-flow anchors for policy and goal. Follow its exact JSON contract; do not populate extra undocumented fields or interpret a CSV/SQLite flag as approval. `status` retains historical timestamps and is not a current MT5 observation.
 
-Attainment is informational: continue under the unchanged approved risk policy and strategy when all gates and a valid signal allow. Do not automatically stop, flatten, create a new goal, rebase the denominator, loosen stops, or increase size. If profit later falls below the target, preserve the first attainment record and show both "previously reached" and the current shortfall. A risk breach still triggers account-wide flattening regardless of progress.
+## Trigger And Close
 
-Every trading response, including setup questions, errors, blocked actions, and post-attainment updates, must return this compact report with actual values or explicitly marked unavailable fields:
+On the first **actually observed and verified** `estimated_net_gain >= target`, latch the target stop. Do not infer an earlier floating-equity crossing from closed deals, invent a continuous peak, or backdate enforcement. An unobserved crossing may be missed while the AI is inactive.
+
+Under the final approved whole-account mandate:
+
+1. Stop new entries and other risk increases immediately, including automatic member switches that would add exposure.
+2. Cancel all pending entry orders, including manual/other-origin entries, using the actual documented MCP tool. Preserve necessary protective orders until their positions are safely closed.
+3. Close all account positions including manual exposure using true position-close/reduce semantics. An opposite entry may hedge or reverse rather than close. Record intended actions before dispatch where the helper is available; an unavailable helper must not delay previously authorized identity-verified safety reductions.
+4. Read back cancellations, partial/late fills, remaining orders, volume, stops and uncertain requests. Close remaining verified exposure under the same mandate, without blindly duplicating an uncertain close. Reconcile orphan orders only after their protection is no longer needed.
+5. Verify flat positions, no pending orders, resolved intents and final costs. Report the actual final net gain and any shortfall separately from the trigger. A submitted request or accepted partial fill is not a flat account.
+
+The stop stays latched after slippage, rejected/partial closes, equity recovery, profit falling below target, later cost corrections, new days and reconnects. Do not automatically trade to make up a shortfall. If a loss stop is also latched, loss handling takes precedence; neither latch hides the other.
+
+Before a trigger, positions retain their original approved exits/ownership except for an explicitly approved transition. No-entry regimes or target/loss latches do not prevent identity-verified, previously authorized protective management and reductions. After a whole-account trigger, that cancellation/closure mandate overrides normal member holding periods.
+
+## Final Result And Resume
+
+While exposure, costs or requests remain unresolved, report target-triggered/closure-pending, not a guaranteed achieved net profit. Once verified flat with final costs, actual incremental net gain is `final_equity - C_goal - E0` and shortfall is `max(0, target - final_net_gain)`. With a normal flat cash account, final balance equals equity; verify actual broker semantics rather than summing deal profits a second time.
+
+For example, a target of `15` may trigger on estimated liquidation gain `15`, then close at actual net `14.7`. Report trigger observed, closure verified, final net `14.7`, shortfall `0.3`, and **stopped**. Do not falsely claim the final goal was met or clear the stop because the estimate changed. Later charges/corrections update the reported result, not the existing latch.
+
+New-goal activation requires explicit approval of that new goal and its frozen baseline, settled previous exposure/intents/costs, fresh post-approval reconciliation and unchanged risk policy under the helper contract. It preserves the observed risk peak and original policy/flow anchor. Explicit playbook `reauthorize` changes reviewed strategy authority without resetting either monetary baseline or any latch. A loss latch requires an explicitly approved replacement risk policy and baseline reset; a new target, strategy approval or local flag cannot release it. Never silently replace rules, evidence, symbols or policy limits to pursue the target.
+
+No process is installed to run checks or close positions while the AI is inactive. Broker stop-losses remain essential but cannot guarantee the monetary cap or target. A stop failure, stale data, missing tool/permission or unresolved exposure must be reported honestly with the next safe permitted step.
+
+## Compact Trading Report
+
+Every trading response, including onboarding questions, errors, blocked decisions and liquidation updates, includes this compact report with actual values or `unavailable`:
 
 ```text
-As Of: <verified UTC timestamp, broker day, and any stale source timestamps>
-Connection / Account / Guard: <status; login+server; demo/live; currency; health>
-Goal: <money or pct, fixed start equity, account-currency target, approval status>
-Realized Net: <net profit after costs; source verified or unavailable>
-Progress / Remaining: <current percent, remaining account-currency money>
-Unrealized P&L: <separate open price P&L/costs with broker semantics identified>
-Risk: <daily used/limit; trailing used/limit; monetary headroom; latch/status>
-Backtests / Selection: <available/selected strategies; run IDs, reused/new evidence, evaluation dates/timeframes, setup/result review states>
-Strategy / Authority: <chosen completed specification and source/rules fingerprints; pinned reviewed run; named-account approval or missing requirement>
-Outcome: <verified action result, no signal, blocked reason, or unresolved exposure>
-Next Permitted Step: <compliant action, requested input, or waiting condition>
-Attainment: <not yet reached, reached, previously reached/currently below, or prior crossing invalidated/unconfirmed>
+Account / As Of: <login + server; demo/live; currency; connection; verified source times>
+Budget / Risk: <budget; observed adjusted peak; drawdown; remaining money; stop floor; loss latch>
+Target / Progress: <target; goal-start equity/time; estimated net gain; incremental close costs; progress/remaining>
+Authority / Strategy: <draft/approved; exact playbook/member/composite evidence; current selection or no-entry reason>
+Stop / Exposure: <target/loss latch; open/pending exposure; unresolved intent; closure pending or verified>
+Outcome / Next: <actual MCP result or blocker; final net/shortfall when verified; next permitted action>
 ```
 
-Do not expose tokens or hide stale data behind a fresh report timestamp. During incomplete setup, report the known draft target/limits and mark unverified metrics unavailable, not zero. State completion progress, limits, outstanding blockers, and the permitted next step honestly; never guarantee returns, fabricate successful orders/flattening, or imply perpetual monitoring by the AI. Independent guard coverage is not a claim that the AI keeps running or will send reports while inactive.
+Do not substitute the report-generation time for stale source timestamps, invent zero balances or assume a missing database is approved. Label the last actual snapshot/check; do not imply continuing monitoring, execution or reporting while inactive. A simulated return or saved backtest is never current account profit.
 
-At the strategy-results stage, supplement this account report with per-selected-strategy results showing all six metrics for every symbol and its shared-capital portfolio, dates/timeframes, reused/new evidence, and limitations. Keep cached research timestamps historical and account telemetry timestamps distinct. Simulated return/total return never fills `Realized Net` or goal progress. Comparing results does not approve all strategies; the final complete summary must explicitly request approval of the chosen result and autonomous authority on the named account before execution.
+At the results/final-approval stage, supplement the compact report with the complete stored English member/controller specification, exact sources/rules/run/evidence binding, new/reused status, dates/timeframes, all six after-cost metrics for each symbol/member/composite portfolio, regime/session samples, costs/exposure, suitability results and limitations. One full question may review those exact results and authorize the named-account mandate only when it explicitly requests both.
 
-## Arithmetic Checks
+## Synthetic Workflow Checks
 
-These are fictional validation cases, not a real account, goal, or strategy.
-
-| Case | Expected Report |
+| Case | Expected Outcome |
 | --- | --- |
-| Goal-start equity `10000`, target `2%`, realized net `50` | Target `200`, profit `0.5%` of start equity, progress `25%`, remaining `150`. |
-| Same target, realized net `250` | Progress `125%`, remaining `0`; record first attainment, continue only within approved risk/strategy. |
-| Previously attained, current realized net `190` | Current progress `95%`, remaining `10`, historical attainment preserved. |
-| Same target, realized net `-50` | Progress `-25%`, remaining `250`; do not hide the loss. |
-| Money target `500`, realized net `50` | Progress `10%`, remaining `450`, both in verified account currency. |
-| A deposit increases equity during the goal | No realized-profit credit or target-denominator reset from the deposit. |
-| Closed gross profit `60`, signed fees/commission `-10` | Net `50`, not `60`; do not subtract already netted costs again. |
-| Repeated reads/partial closes with the same deal IDs | Each outcome/cost counted once; checkpoint and source timestamps remain verifiable. |
-| A broker correction removes the original crossing above target | Preserve the invalidated record in the audit; recompute valid attainment or report no confirmed historical crossing, without resetting the goal. |
+| Baseline `100`, target `15`, equity `110`, remaining close costs `0.5` | Estimated gain `9.5`, remaining `5.5`; no realized-only shortcut. |
+| Equity `115`, close costs `0.5` | Gain `14.5`; not reached. At equity `115.5`, trigger and close under the approved mandate. |
+| External deposit `200` changes equity from `100` to `300` | No goal profit, denominator reset or adjusted risk peak from that deposit. |
+| Manual position or late pending fill exists at the target trigger | Include it in cancellation/closure; verify the actual final account state. |
+| Estimated target triggered but final net is `14.7` | Retain the latch and report final shortfall `0.3`, not automatic re-entry. |
+| Disconnected during an open position | No claim of continuous helper protection; report last actual observation and broker-stop/unknown-exposure status. |
+| Same-policy new goal after settlement | New goal anchor, unchanged risk-policy peak/history; loss latch cannot be released by a target change. |

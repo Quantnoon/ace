@@ -1,187 +1,174 @@
-# Risk Management Instructions
+# Monetary Risk And Account State
 
 ## Inputs And Authority
 
-During trading onboarding, after authenticated read-only MT5 account verification, ask the first outstanding risk question in the same response that reports the connection. Standalone strategy/backtest research does not start these questions or update the account CSV. Ask one focused question at a time in the following order. All four inputs are percentages, not fractions, money, or leverage; there are no numeric defaults.
+After read-only MT5 account verification, collect a positive monetary **budget** and **target**, in the verified account currency. These are the only user-supplied trading settings. Accept both together; ask one focused question only for missing or ambiguous amounts/currency. No percentage-risk, daily-limit, per-trade-cap, capital-allocation or strategy-selection questionnaire. There are no monetary defaults. A dollar sign does not necessarily mean USD.
 
-1. `daily_drawdown_pct`: "What daily drawdown limit, as a percentage of broker day-start equity, should Ace use for this account?"
-2. `max_drawdown_pct`: "What maximum trailing drawdown limit, as a percentage of the continuous cash-flow-adjusted equity high-water mark since policy approval, should Ace use?"
-3. `risk_per_trade_pct`: "What maximum risk per trade, as a percentage of current account equity, should Ace use?"
-4. `max_aggregate_risk_pct`: "What maximum aggregate risk across all open positions and pending orders, as a percentage of current account equity, should Ace use?"
+The budget is a fixed-money trailing-loss allowance over the whole connected account, not segregated capital, a per-trade allowance, or a cumulative sum of losing trades. The account may contain much more equity. All manual/other-origin positions, pending orders, floating P&L and costs count. Ace chooses sizing and the number of qualifying trades, subject to actual broker affordability and remaining headroom. An unaffordable minimum lot means no trade, not a larger budget.
 
-Read and validate the root CSV before reusing or updating saved inputs. Reuse valid, verified same-account inputs, including user-supplied drafts that remain unapproved, and accept unambiguous valid inputs supplied together in the current request. Skip inputs already supplied and ask only for the first missing input or a focused clarification/correction. Corrupt or differently bound saved state requires the persistence/recovery rules below, not silent replacement with new answers. Verify approval provenance separately; reusing numeric inputs does not grant trading authority. Once all four are valid, continue to the next incomplete onboarding step in `AGENTS.md`, with the target before strategy, rather than asking for them again.
+Save supplied values through `draft` only after verifying their account binding. Drafts do not approve a goal, replace an active policy, reset its peak or release a stop. Reuse existing valid drafts as drafts and actual approval only after verifying its provenance. Standalone research, connection-only checks and instruction maintenance must not create account state.
 
-Normalize an unambiguous input such as `0.5%` to the numeric CSV value `0.5`; confirm ambiguous units instead of guessing. Each value must be finite and satisfy `0 < value < 100`. Per-trade risk must not exceed aggregate risk. Ask for a correction to invalid or incompatible inputs; never choose a replacement value or automatically adjust either limit. Account equity, policy/day baselines, and the high-water mark must be positive for risk sizing. Do not round comparisons to the display precision.
+The one final named-account approval must cover login/server/demo-live type/currency; both monetary amounts; observed-only trailing behavior; exact policy/goal baselines and source timestamps; full frozen English member/controller/playbook rules and exact reviewed evidence; approved broker symbols and normal management/transition permissions; and cancellation/closure of **all account exposure including manual trades** at either trigger. Disclose inactivity, missed peaks/breaches, execution delays and overshoots. Supplying amounts, a test result, an example or a stored boolean is not approval.
 
-Daily drawdown is cash-flow-adjusted loss from broker day-start equity, not an intraday trailing peak. Maximum drawdown trails the continuous, cash-flow-adjusted equity high-water mark since policy approval. Both include floating P&L and trading costs. Confirm midnight resets in the verified broker-server timezone, including DST rules.
+After that approval, an eligible action passing the checks below may be submitted through the actual MT5 MCP tool without another per-trade confirmation. Client tool permissions still apply. The helper neither grants those permissions nor places an order.
 
-Save each accepted input as an unapproved draft using validated complete writes and readback under the CSV contract below. Keep draft approval fields empty; do not populate approval timestamps from this document or sample values. If persistence is unavailable, report the blocker without claiming inputs were saved, and keep entries blocked. When resuming an existing policy, preserve its approval evidence, anchors, peaks, and latches; changed limits must follow the replacement-policy rules below, not overwrite the active policy or reset history. Final approval must identify exact account/server/demo-live type, rules/baseline evidence, complete approved English strategy/source and selected-run binding, broker symbol scope, target, and autonomous authority including cancellation/closure of all exposure, even manual trades. One final confirmation may cover that chosen result and account authorization only when explicitly requested together; test-setup or result approval alone never grants it.
+## Observed Trailing Arithmetic
 
-## Root CSV Contract
-
-The sole active account checkpoint is `risk_management.csv` at the repository root. It is local-only and ignored by Git, as are `/risk_management.csv.*` backups/temporary files. Do not commit filled account-bound policy, strategy, target, authorization, or financial state. Supplied strategy sources, approved English rulebooks, and sanitized simulated research may be shared under [strategy instructions](strategy.md); research attempt records and private receipts are supporting evidence, not another active account checkpoint. Never store access tokens in any column.
-
-Use schema version `1`, the exact ordered header below, and zero or one logical data row. Header-only means unconfigured and blocked, not default risk or approval. During trading onboarding on a fresh checkout, create this header if absent; standalone research and repository maintenance must not initialize it. If a missing file might represent lost existing policy/history, recover from verified guard/broker evidence before allowing trading; do not bootstrap a new peak to bypass lost state.
-
-```csv
-schema_version,account_login,broker_server,account_type,account_currency,policy_id,policy_approved_at_utc,broker_timezone,daily_drawdown_pct,max_drawdown_pct,risk_per_trade_pct,max_aggregate_risk_pct,policy_start_equity,net_cashflow_since_policy_start,broker_day,day_start_equity,net_cashflow_since_broker_day_start,adjusted_equity_high_watermark,daily_breach_day,max_breach_at_utc,risk_state,guard_reference,guard_verified_at_utc,goal_id,goal_unit,goal_value,goal_start_equity,goal_started_at_utc,goal_carry_in_rule,goal_history_cursor,goal_realized_net,goal_first_reached_at_utc,strategy_spec,strategy_approved_at_utc,account_authorized_at_utc,last_verified_at_utc
-```
-
-Use RFC 4180 CSV quoting, a UTF-8 file, decimal points without thousands separators, and numeric percentages without `%`. Double embedded quotes; quote cells containing commas, quotes, or newlines. `strategy_spec` may be multiline but still belongs to one logical row. Never split CSV by comma/newline naively or evaluate cell content as code/formulas.
-
-| Column | Meaning |
-| --- | --- |
-| `schema_version` | `1` for a populated supported row; other versions block execution. |
-| `account_login` | Verified account identifier stored as text, without changing leading zeros. |
-| `broker_server` | Verified broker server; together with login uniquely binds the account. |
-| `account_type` | Verified `demo` or `live`, explicitly included in user approval. |
-| `account_currency` | Verified account currency for equity, profits, costs, and monetary caps. |
-| `policy_id` | Unique nonsecret identifier of the exact approved risk policy, or blank in a draft. |
-| `policy_approved_at_utc` | Immutable UTC anchor of that policy's approval and cash-flow/peak tracking. |
-| `broker_timezone` | Verified timezone with its DST rules, or verified offset plus documented offset-change schedule; never an assumed host timezone. |
-| `daily_drawdown_pct` | Approved positive daily loss percentage. |
-| `max_drawdown_pct` | Approved positive trailing maximum-drawdown percentage. |
-| `risk_per_trade_pct` | Approved positive proposed-trade loss cap as a percentage of current equity. |
-| `max_aggregate_risk_pct` | Approved positive total open-plus-pending stressed-stop-risk cap as a percentage of current equity. |
-| `policy_start_equity` | Verified equity at the immutable policy approval anchor. |
-| `net_cashflow_since_policy_start` | Signed verified external capital flows since that anchor. |
-| `broker_day` | Verified broker-local date `YYYY-MM-DD` for the daily baseline. |
-| `day_start_equity` | Actual verified account equity at that broker day's midnight. |
-| `net_cashflow_since_broker_day_start` | Signed verified external flows since that midnight, including flows before a mid-day onboarding. |
-| `adjusted_equity_high_watermark` | Guard-maintained continuous peak of equity minus policy-window external flows. |
-| `daily_breach_day` | Broker-local date of a latched daily breach; empty only when no applicable latch exists. |
-| `max_breach_at_utc` | UTC timestamp of a latched maximum breach; never cleared merely by recovery/restart/midnight. |
-| `risk_state` | One of the states below; not sufficient evidence of authority on its own. |
-| `guard_reference` | Nonsecret guard/account/policy, execution-journal and verifiable audit/ownership references; not an access secret or invented guard ID. |
-| `guard_verified_at_utc` | Time of the last actually verified healthy/armed guard evidence; do not make stale telemetry fresh by writing the current time. |
-| `goal_id` | Identifier of the user's current approved goal; empty in an unapproved draft. |
-| `goal_unit` | `money` or `pct`, explicitly confirmed with the user. |
-| `goal_value` | Positive finite amount in account currency, or percentage points. |
-| `goal_start_equity` | Positive equity fixed at goal approval; never rebased after deposits, losses, or attainment. |
-| `goal_started_at_utc` | Immutable approved goal-start boundary timestamp. |
-| `goal_carry_in_rule` | Exact approved carry-in profit/cost attribution and required baseline evidence; `none` only when verified no carry-in exposure/attribution issues exist. |
-| `goal_history_cursor` | Verifiable accounting checkpoint; preserve the original start watermark and carry-in baselines when advancing the last reconciled cursor. Use actual broker cursor semantics or quoted structured checkpoint data. |
-| `goal_realized_net` | Reconciled net realized goal profit cache, possibly negative; broker records remain authoritative. |
-| `goal_first_reached_at_utc` | First valid verified attainment timestamp; retained after subsequent actual losses. Corrections invalidating that crossing require audited recomputation, not a false retained attainment. |
-| `strategy_spec` | Full user-approved completed English rules/parameters, including approved AI-derived additions, plus verbatim supplied-source package/reference and a separate reviewed-evidence binding; not a name, generated Python, or AI summary. |
-| `strategy_approved_at_utc` | Actual user approval timestamp of the stored specification and evidence binding; research review alone does not populate it. |
-| `account_authorized_at_utc` | Actual authorization for autonomous trading and account-wide emergency reductions under the specified policy/goal/strategy. |
-| `last_verified_at_utc` | Time of the last fully reconciled account/history check; also report underlying data timestamps rather than concealing stale sources. |
-
-UTC timestamp values use ISO 8601 with `Z`. Preserve actual broker ordering/watermarks when multiple deals share a timestamp. Missing values are empty cells, not zero, `NaN`, fabricated timestamps, or sample data. Approval/goal identifiers and start timestamps stay empty until real user approval and verified activation evidence exist.
-
-## Strategy Evidence
-
-Use the existing `strategy_spec` cell, not new columns, for the complete user-approved English rulebook followed by a separately labeled source/evidence binding. Preserve supplied rules and clearly identify approved derived additions; retain the complete original source verbatim in its frozen package, embedding it or referencing its exact repository path/fingerprint rather than replacing it with an AI summary. Identify source and completed-rule fingerprints separately, selected run ID/path, method/configuration/data/report/output fingerprints, approved broker symbol scope, and trusted private setup/result/account approval references under [strategy instructions](strategy.md). Use documented UTF-8/LF fingerprint normalization; the appended binding is not part of either rulebook/source fingerprint. Present the actual complete stored content for strategy/account approval. Drafts may retain known rules/metadata, but missing evidence and approval timestamps stay empty.
-
-A catalogue `review_approved` status is research review, not stored strategy approval, account authorization, or `ready`; pre-test approval is not result review. A final explicit decision can approve the chosen result/specification and authorize the named account together only against the full presented summary. Record each meaning with actual trusted provenance/timestamps, even if the same receipt covers both. Standalone research never populates trading approval fields. Verify unchanged artifacts and receipts, not just hashes or a populated cell.
-
-On resumption, reuse verified unchanged completed research without automatically rerunning it, but verify current broker applicability and actual account authorization separately. Missing/stale reviewed evidence blocks entries; retain approvals, anchors, peaks, latches and goal history while obtaining needed review/binding/reapproval. Changing account risk limits or a goal does not itself trigger a research rerun, expand the live symbol scope, or authorize strategy changes. Never silently migrate account state, reset baselines, or substitute an older/newer run to make trading permissible.
-
-## Persistence And Recovery
-
-- Read and validate the complete CSV before updates: exact header/version, at most one logical row, identity/currency binding, finite numeric values, timestamps, latches, approval provenance, and internal consistency. Invalid or unreconciled data blocks entries; do not overwrite corruption with permissive defaults.
-- Keep a single writer for the active account. Verify exclusive trading ownership with the guard; another client/session/worktree must not trade the same account concurrently. Do not switch accounts while prior exposure or protection is unresolved. A different account requires separate approval and recovery of its own existing guard history, not reuse of the current row's peaks.
-- Write validated complete state using atomic replacement or an equivalently reliable client-supported method, then read it back before risk-increasing actions. Preserve the prior row in a local ignored backup when replacing a policy/account. If persistence or ownership is unreliable, block entries. CSV failure must not delay identity-verified, previously approved emergency reductions; the independent guard must retain the latch.
-- Reconcile the CSV with current broker exposure, full cash-flow/deal history, continuous guard peaks/latches, armed policy, every unresolved durable mutation intent, actual user approval provenance, and the unchanged selected strategy/reviewed-run evidence after restart/reconnection or any manual edit. The CSV is a checkpoint, not permission to override the guard or broker; absence of a visible order is not proof that an old request cannot still execute.
-- Never lower a peak, clear a current daily/max breach, move an approval anchor, relabel trading losses as capital flows, or initialize an unknown day-start value to current equity to create headroom. Recover verified values or report unavailable and remain blocked.
-- A goal or strategy change does not reset risk history. Renewing account authorization under the same risk policy must not alter `policy_approved_at_utc`, `policy_start_equity`, its cash-flow window, or peak. A replacement risk policy requires explicit approval of its changed rules and any proposed baseline reset, a new policy ID, preserved old history, and verified guard installation; never auto-replace a breached policy.
-
-## Drawdown Calculations
-
-Use full-precision verified values in the account currency. External capital flows are signed: deposits positive, withdrawals negative. Classify transfers/credits/adjustments using documented broker semantics; trading commission, swap, fees, and losses are not external capital flows. Ambiguous classifications block new exposure.
-
-The daily and policy windows differ. At mid-day setup, the daily cash-flow window already includes movements earlier that day, while the newly approved policy window starts at zero.
+Use actual equity, not balance alone. Equity already reflects the broker's current floating valuation and booked costs; do not deduct them twice. External cash flows are signed deposits/withdrawals/nontrading transfers under verified broker semantics, never commissions, swaps, fees or trading losses. Unknown classifications or incoherent history block additions.
 
 ```text
-E = current account equity, including floating P&L and costs
-C_policy = net external cash flows since policy approval
-C_day = net external cash flows since broker midnight
-A_policy = E - C_policy
-A_day = E - C_day
-D = actual equity at broker midnight
-H = highest continuously verified A_policy since policy approval
+B = approved monetary budget
+T = approved monetary target
+E = current broker equity
+C_policy = external cash flows since the policy anchor
+C_goal = external cash flows since the goal anchor
+A = E - C_policy
+H = max(previous observed adjusted-equity peak, A)
+drawdown = H - A
+remaining_risk = B - drawdown
+adjusted_stop_floor = H - B
+current_account_stop_floor = H - B + C_policy
 
-daily_drawdown_pct_used = 100 * max(0, D - A_day) / D
-max_drawdown_pct_used = 100 * (H - A_policy) / H
-daily_floor = D * (1 - daily_drawdown_pct / 100)
-trailing_floor = H * (1 - max_drawdown_pct / 100)
-daily_allowance = A_day - daily_floor
-trailing_allowance = A_policy - trailing_floor
-remaining_loss_allowance = min(daily_allowance, trailing_allowance)
-per_trade_cap = E * risk_per_trade_pct / 100
-aggregate_cap = E * max_aggregate_risk_pct / 100
+estimated_goal_gain = E - C_goal - goal_start_equity - remaining_close_costs
+loss_trigger = drawdown >= B
+target_trigger = estimated_goal_gain >= T
+
+entry_fits = existing_stressed_risk + proposed_stressed_risk
+             + additional_safety_margin < remaining_risk
 ```
 
-Initialize policy `C_policy = 0` and `H = policy_start_equity` only at a verified new approved policy anchor. Thereafter reconcile `H` with the guard's continuous maximum; a chat-sampled peak is insufficient. If verified `H < A_policy`, obtain fresh consistent guard evidence rather than silently repairing a stale peak locally. Nonpositive/unknown baselines prevent sizing; authorized safety actions are still allowed on the confirmed account.
+Initialize `H` only at a genuinely approved new policy baseline. It follows the highest equity **actually observed** after cash-flow adjustment; do not invent unseen peaks or reconstruct continuous equity from closed deals. There is no midnight reset. Deposits/withdrawals do not create profit, drawdown or a new adjusted peak. Policy and goal anchors may differ; keep their cash-flow windows separate.
 
-A breach occurs at equality: `daily_drawdown_pct_used >= daily_drawdown_pct` or `max_drawdown_pct_used >= max_drawdown_pct`, equivalently the matching adjusted equity at/below its floor. Do not trade against a displayed rounding difference, and do not clamp negative headroom to disguise a breach.
+Equality breaches the loss budget, and equality in prospective allocation is unaffordable. Do not round comparisons to display precision, clamp negative headroom, or enlarge the budget after gains. `H >= A`, so remaining headroom never exceeds `B`. Use full-precision decimal arithmetic.
 
-At verified broker midnight, record actual new `D`, new `broker_day`, and `C_day = 0`, then reconcile any later flows. Release only the prior day's daily latch when the guard confirms the rollover and the new day is not breached. Do not reset `C_policy`, `H`, or the maximum latch. Require authoritative timezone/DST, midnight equity, and continuous breach history; history of closed trades alone cannot reconstruct floating midnight equity or missed equity peaks. Unknown day-start/history means no entries.
+At either observed trigger, latch off new risk, cancel all pending entries and close all account positions under the approved mandate. Keep protective orders until their positions are safely closed, then reconcile orphan orders and late fills. Loss-stop handling takes precedence if both triggers apply. A submitted close is not verified flat exposure.
 
-## Continuous Guard Gate
+The target estimate deducts only incremental closing charges/slippage not already in equity. Once triggered, it stays latched even if final verified liquidation profit is below target. Report the trigger, pending closure, final net result and shortfall separately under [Goals And Progress](goals.md). Never automatically trade again to recover a shortfall.
 
-Prompt instructions are not an always-on risk engine. Autonomous entries require an independent, already implemented MT5/MCP-side guard that remains operating while the AI is inactive, disconnected, restarting, or denied tool access. Building/installing such a service is outside this repository's instructions-only scope.
+## Before Each Risk Increase
 
-Verify through documented guard operations/status readback that it:
+1. Reverify the account, real approval provenance, intact member/composite evidence, approved mapping, eligible signal/regime/session, ownership and unresolved intents. Use actual MCP schemas and broker permissions. A catalogue label or cached helper report is insufficient.
+2. Read current equity/balance, all positions and pending orders, quotes/economics, margins and complete relevant history through MCP. Include manual exposure. Reconcile cash-flow coverage to the account snapshot; a deposit visible in equity but missing from lagging history must not become profit or a new peak.
+3. Verify broker-side stops for existing exposure and protective stops in each entry request. Missing/unprotected exposure, unknown conversion or costs, and unexplained pending orders are not zero risk. Do not modify manual stops without authority.
+4. Calculate conservative account-currency loss from **current marks to stressed stops** for open positions, including reversal of floating gains. Calculate pending/proposed entry-to-stop risk under stressed fills. Include incremental spread, commission, swap/fees, conversion and slippage/gap assumptions exactly once. Assume compatible pending orders can fill; do not net unverified hedges/correlations or anticipated profits/cancellations.
+5. Size down to the broker lot step; verify minimum/maximum volume, stop/freeze distances, margin/free margin and actual trading availability. Use `R_existing + R_proposed + safety_margin < remaining_risk`. For an approved risk-increasing modification, the proposal includes all additional risk without assuming the old exposure has disappeared. Stop widening and loss-chasing remain prohibited.
+6. Run `prepare` with a fresh coherent snapshot and the exact intended action. Only a successful `may_dispatch: true` for that recorded action permits proceeding to its actual MCP call under the approved mandate. Dispatch promptly with the same account/tool/parameters/action identity; a prior `check`, an old preparation, or exit code zero is not reusable order permission.
+7. Read back actual fills, remaining volume/orders and protective stops. Use `resolve` with authoritative outcome evidence and a later snapshot. Missing/incorrect protection blocks additions; use the approved correction or reduction response, never a wider stop. A timeout or missing immediate order is not nonexecution and must not prompt a blind retry under a new ID.
 
-- Is armed for this exact account/server, approved policy ID/anchor, timezone, all four limits, and the formulas above, with cash-flow/cost handling matching the broker.
-- Continuously observes equity and all account exposure, including manual positions and pending orders, and enforces account-wide risk/admission budgets and exclusive execution ownership, not merely an alert to the AI.
-- Atomically binds mutation/admission to the expected account and execution fencing generation, supports durable pre-dispatch intent/correlation records and crash-safe result recovery, and coordinates its own liquidation with the agent so only one authorized dispatcher acts on an outstanding operation.
-- Persistently maintains the policy high-water mark, daily baselines, cash-flow windows, and daily/maximum breach latches through restarts/day changes.
-- Can cancel all pending orders and liquidate all account positions under the approved mandate without needing the AI to stay active, and blocks new exposure when halted.
-- Has verifiably current heartbeat/feed health under its documented cadence/timeouts and maintains protection under relevant connection failures. Unknown health or undocumented freshness behavior is not proof of continuous coverage.
+There is no fixed trade-count cap. One unresolved dispatch at a time is a local recovery safeguard, not a limit on the number of verified open positions or subsequent qualifying trades. Normal actions retain their original management rules; no-entry regimes do not prevent already authorized reductions. Missing helper/state must not delay identity-verified, previously approved emergency reductions through MCP.
 
-A user assertion, CSV `ready` flag, broker-side individual stop, or status label without matching policy/readback is insufficient. Configure/arm a supported existing guard only after explicit approval. Missing, stale, unhealthy, mismatched, or unverifiable guard/ownership evidence blocks entries, but does not prohibit approved identity-verified safety reductions. Setup, target recording, strategy collection, read-only backtest research, and honest reporting may still proceed while execution is blocked; research does not require arming a guard.
+## Helper Boundary And CLI
 
-Even a continuous guard and stops cannot guarantee losses stay within limits: gaps, slippage, stale broker feeds, outages, market closure, rejected liquidation, and permissions may exceed them. Never promise a hard cap or guaranteed return.
+[`scripts/account_check.py`](../scripts/account_check.py) uses Python's standard library only. It has no MT5 library, networking, credentials, order sender, scheduler or background loop. The agent obtains real MCP facts and executes actual MCP orders. A passing local check cannot fence manual traders, copied repositories, account switches or a change between check and dispatch. There is no independent continuous guard or guaranteed monetary cap/return.
 
-## Pre-Order Risk Gate
+Invoke `python scripts/account_check.py <command>`, supplying a JSON object through standard input or `--input <private-json-file>`. `status` needs no input. The default database is repository-root `ace_state.sqlite3`, independent of working directory; `--db <path>` exists for isolated tests or an explicitly managed location, not parallel trading ledgers. Do not initialize a real database to test the helper.
 
-Before any entry, pending order, added volume, or other risk increase:
+JSON money is preferably decimal strings; JSON integers/decimals are also parsed exactly. Booleans, binary Python floats, nonfinite numbers, currency symbols and grouped numbers are invalid money. Supported inputs have at most 28 significant digits, magnitude below `1e19`, and no more than 12 decimal places. Comparisons use 64-digit decimal context; SQLite never stores money as `REAL`. Times are actual ISO-8601 UTC strings ending in `Z`, including a `T`, not invented times copied from examples.
 
-1. Reverify the account, approvals, persisted state, exact unchanged user-reviewed strategy/run and its broker applicability, exclusive ownership/fencing, source freshness, armed guard, and resolution of every prior mutation intent. Require the reviewed-evidence binding and actual user provenance in [strategy instructions](strategy.md), plus server-side account-bound dispatch, not merely a pre-call identity check. A `ready` checkpoint or catalogue status is not a substitute for this check.
-2. Refresh all open/manual positions and pending orders. Require valid protective stops submitted with new orders and confirmed by readback; if the API cannot attach protection at entry or existing exposure has unknown/unprotected stop risk, do not add exposure. Do not alter manual stops without appropriate explicit authority.
-3. Calculate conservative account-currency stressed-stop loss using real tick/contract values, prices, conversion, direction and broker rules. Existing-position loss is from current mark to stop, including the possible reversal of floating gains, not just entry-to-stop risk. Pending/proposed loss is from its stressed entry to stop. Include incremental commission, swap/fees, spread where not already counted, and a defensible slippage/gap allowance without double-counting costs already in equity. This is a stress estimate, not a guaranteed worst loss.
-4. Assume all compatible pending/proposed exposure can fill. Do not net risks with unverified hedge/correlation offsets, positive take-profit outcomes, or presumed order cancellation. Include external/manual exposure in the aggregate.
-5. Let `R_existing` be stressed-stop risk of all current open/pending exposure and `R_new` the proposal's risk. Require `R_new <= per_trade_cap` and `R_existing + R_new < min(aggregate_cap, remaining_loss_allowance)` with a conservative additional safety margin. Unknown necessary cost/stress assumptions must be resolved before execution, not set to zero.
-6. Round volume down to the actual broker lot step, then recalculate risk, minimum/maximum lot, stop/freeze distances, margin/free margin, market availability, and trading permissions. If even the minimum lot does not fit, skip the trade. Do not round risk up into a limit.
-7. Durably journal the account/policy/owner, unique approved signal/action ID, and parameters before dispatch. Execute only that approved strategy signal through actual documented account-fenced MCP semantics, verify fills/stops/remaining volume, then finalize the journal outcome and reconcile guard/CSV/history. An uncertain acknowledgment invokes the connection file's recovery rules, not blind retries or a replacement intent ID.
+Exit code `0` means the request was processed, including blocked/stop decisions; read `decision`, `reason_codes` and **`may_dispatch`**. Only `prepare` can return a true dispatch flag. Contract/input/state errors return code `2` with `ok: false` and `may_dispatch: false`; CLI syntax errors use normal usage output. No error or successful calculation means an order was sent.
 
-If an accepted fill or modification has missing/incorrect protection or unexpected volume, halt entries, set `reconciliation_required`, notify the guard, and follow the explicitly approved protection-failure response. Restore only the intended approved protection or reduce/close affected exposure through coordinated account-bound safety operations; never widen the stop to fit broker restrictions or leave the failure unreported while waiting for another signal. Obtain appropriate authority for manual-position changes rather than assuming it from the ability to read them.
+All mutating requests include `owner_id` (the verified single local writer identifier) and integer `expected_revision` from the previous result or `status`; the initial revision is `0`. Do not guess or blindly replay after a revision mismatch. Most processed checks, including blocked checks, advance the revision. Source/receipt references are nonsecret references to actual tool or user evidence, not tokens or fabricated verification.
 
-Do not widen stops or increase leverage/risk allocations to chase a target or recover a loss. A risk-compliant position size is a ceiling, not an instruction to use all remaining headroom. No signal means no trade.
-
-## Breaches And State
-
-Risk latches are independent of the display state. A max latch survives all other status changes; a daily latch survives recovery within its broker day.
-
-| `risk_state` | Meaning |
+| Command | Exact Additional Request Fields |
 | --- | --- |
-| `setup_incomplete` | A required input, strategy, reviewed backtest, target, or real approval is missing; header-only has this effective state. |
-| `ready` | All prerequisites, including reviewed strategy evidence, are currently verified, with no applicable breach; entries still require the pre-order gate and strategy signal. |
-| `daily_halted` | Current broker day's daily latch is active, even if equity later recovers. |
-| `max_halted` | A maximum breach is latched; takes precedence over all other display states. |
-| `guard_unavailable` | Guard health/policy/ownership cannot be verified; retain any separate breach latches. |
-| `reconciliation_required` | History, identity, source/strategy-evidence consistency, CSV, or mutation result is unresolved; retain separate latches. |
+| `draft` | `account`, `source_ref`, supplied `budget` and/or `target`, and optionally the complete agent-prepared `mandate` proposal. Creates the database only during actual onboarding. Updates pending drafts, not active authority. Save the full proposed mandate before requesting final approval. |
+| `activate` | `mode`, `mandate`, fresh `snapshot`, `approval_ref`, `approved_at`; frozen approved `baseline` for `start`, `new_goal` and `replace_policy`; `reset_reason` for `replace_policy`, `takeover_ref` when changing `owner_id`. Except unchanged `resume`, both money amounts and the exactly matching mandate must already be saved as a draft. |
+| `check` | `snapshot`. Records an actual observation, computes limits and latches; does not prepare an order. Call on every active decision cycle, even without an entry signal. |
+| `prepare` | `snapshot`, `action`. Rechecks and transactionally records the exact action and its entry-risk reservation before MCP dispatch. |
+| `resolve` | `snapshot`, `intent_id`, `outcome`, `evidence_ref`; `readback_verified: true` for settled outcomes and nonempty `broker_tickets` for `completed`. |
+| `status` | No JSON required. Read-only cached state, revision and outstanding intent details; absent database means unconfigured and does not create a file. |
 
-On a confirmed breach, halt risk increases immediately and record the appropriate latch in guard/local state as reliably as possible. Under the already approved account-wide mandate, cancel all pending orders and close all open positions, including manual trades, using true documented cancellation/position-close semantics. Do not wait for another goal question or for a failed CSV write to succeed.
+### Account And Snapshot
 
-Coordinate with the guard's liquidation ownership/journal and read back actual orders/positions and remaining volume; do not duplicate a close the guard is already dispatching. Reconcile uncertain results before any bounded retry, respect hedging/netting behavior, and report unresolved exposure/permission failures without claiming successful flattening. If the account cannot be positively identified and atomically bound or tools are disconnected, do not blindly mutate another account; rely on the independent guard and escalate the unresolved protection status.
+`account` is an object with exact string fields `login`, `server`, `type` (`demo` or `live`) and `currency`. Preserve login text, including leading zeros. Every snapshot repeats the same binding. A differently bound database is a blocker, not permission to overwrite the prior account or open another active ledger.
 
-Daily trading may resume only after a verified new broker day, recovered midnight equity/cash flows, released daily guard latch, and all remaining gates. Maximum trading may resume only after explicit user reapproval, verified guard-authorized latch release, and confirmation that the retained policy is no longer breached or that a replacement policy/baseline was explicitly approved. Recovery alone is not reapproval.
-
-## Arithmetic Checks
-
-These are fictional validation cases, not default settings or authorization.
-
-| Case | Expected Result |
+| Snapshot Field | Meaning / Type |
 | --- | --- |
-| `D = 10000`, daily limit `2%`, `H = 10500`, maximum limit `5%`, no intervening flows | Floors `9800` and `9975`; trailing allowance is binding. At equity `9975`, maximum drawdown is exactly `5%`: halt/flatten. |
-| Same limits; verified `H` rises to `10600` | Trailing floor tightens to `10070`; do not retain the old lower floor. |
-| Same-day post-approval deposit `2000`, equity `12000`, both cash-flow windows `2000` | Both adjusted equities `10000`; no profit, new peak, or loss from the deposit itself. |
-| Same-day post-approval withdrawal `500`, equity `9500`, both windows `-500` | Both adjusted equities `10000`; no false drawdown from the withdrawal itself. |
-| Day-start equity `10000`, deposit `2000` before mid-day policy approval at equity `12000` | `C_day = 2000`, `C_policy = 0`, `A_day = 10000`, `A_policy = H = 12000`; daily loss remains zero. |
-| Prior-day post-policy deposit `2000`, new midnight equity `12000`, policy peak `10000` | New `D = 12000`, `C_day = 0`, `C_policy = 2000`, `A_policy = 10000`; daily baseline resets but the policy peak/window do not. |
-| Daily breach followed by same-day recovery | Keep the daily latch; no entries until verified new day and the other gates. |
-| Maximum breach followed by recovery/restart/midnight | Keep the maximum latch; require explicit reapproval and verified release. |
+| `id`, `source_ref` | Nonempty identifiers for this actual observation and its MCP evidence. Do not relabel a cached observation as a new read. |
+| `account`, `as_of` | Verified binding and coherent account observation time. Reject future/stale or out-of-order observations under the mandate's maximum age. |
+| `history_anchor` | Immutable UTC ledger boundary. For `start` or explicit `replace_policy`, it equals the approved **baseline** snapshot's `as_of`, where `cashflows` is empty. The fresh activation snapshot includes all later flows from that same boundary. Subsequent checks and same-policy goals retain it. |
+| `history_cursor`, `history_through`, `history_complete` | Nonempty current broker history watermark; verified coverage at least through `as_of` and not into the future; literal `true` only after reconciliation. Coverage time is not merely the last deal's timestamp. Retain the original start watermark separately. |
+| `cashflows` | Complete list of external-flow objects since the ledger boundary, each with unique string `id`, UTC `at`, and signed monetary `amount`. Repeated full lists are not accumulated again. Include empty `[]` only for verified no flows. |
+| `balance`, `equity` | Actual broker money values. Negative equity is valid loss evidence, not an acceptable activation baseline. |
+| `positions` | Complete array of open-position objects described below, or unavailable. Do not omit manual positions. |
+| `pending_orders` | Complete array of pending-order objects described below, or unavailable. Pending fills and protective/orphan orders must be reconciled. |
+| `free_margin`, `trading_enabled` | Verified account-currency free margin and actual boolean permission/availability for additions. Unknown values block additions. |
+| `remaining_close_costs` | Nonnegative incremental estimated liquidation costs not already included in equity; unavailable is not zero. |
+| `costs_final` | Literal `true` only when costs and final accounting are reconciled. With verified flat/no pending exposure, zero remaining close costs and no outstanding intent, a stopped account may report its final result. |
+
+Each position needs string `ticket`, string `symbol`, boolean `protected`, and nonnegative stressed current-mark-to-stop `risk`. Each pending entry needs those fields plus `kind: "entry"`, with stressed entry-to-stop risk. Ticket uniqueness is checked separately for positions and orders because broker namespaces may overlap.
+
+A separate protective pending order uses `kind: "protective"`, `reduce_only: true`, and `position_ticket` referencing the protected open position. Its risk is already counted in the position, so do not count it twice or mislabel an entry/reversal as protective. Native SL/TP attached to a position is represented by that position's protection/risk, not a fictitious separate order. Preserve journal-backed original member/goal ownership outside these arithmetic fields when managing exposure.
+
+The helper validates the accounting core before moving a peak. It rejects duplicate flows, removed/changed prior events, newly inserted events at/before a previously accepted complete snapshot, conflicting reuse of snapshot identity/time, and incoherent windows. Backdated corrections could change old adjusted peaks, so do not apply them only to current equity. Resolve corrections with authoritative evidence; never patch the database or silently drop prior flows to obtain headroom. A blocked correction leaves policy history/latches intact; an explicit replacement policy is required if the original ledger cannot be reconciled.
+
+Missing proposal, exposure, margin or exit-cost inputs do not suppress a separately verified account loss trigger. A valid target estimate can latch even when existing exposure is unprotected. Unknown history/equity cannot establish a new monetary trigger, but cannot release a prior latch or invalidate already-authorized emergency reduction authority.
+
+### Mandate And Activation
+
+`mandate` is the complete agent-prepared specification, not extra user risk settings:
+
+| Field | Meaning |
+| --- | --- |
+| `playbook_id`, `playbook_spec`, `evidence_ref` | Exact playbook identity, full English member/controller/management rules, and separate trusted binding to all sources, rules, runs, methods, data, configuration, outputs and reviews. Nonempty text is only a structural check, not proof of completeness or genuine approval. |
+| `members`, `symbols` | Nonempty unique string lists of approved member IDs and actual broker symbols. No automatic expansion from newer research. |
+| `max_snapshot_age_seconds` | Positive integer technical freshness limit chosen in the frozen playbook and disclosed in final approval; not a claim that observations occur continuously. |
+| `safety_margin` | Positive monetary contingency from the frozen allocator, additional to modeled costs/stress counted in exposure. Ace derives it; the user need not supply another risk setting. |
+| `allow_entries`, `allow_management` | Requested permissions in an unapproved proposal; at activation, `true` only when real approval permits in-playbook entries and normal management. |
+| `close_all_on_loss`, `close_all_on_target` | Proposed whole-account cancellation/closure permissions, including manual exposure; at activation, `true` only when actual approval grants them. |
+| `accept_observed_only` | The proposal discloses active-snapshot-only checks and possible missed peaks/breaches/overshoots. At activation, `true` requires actual acceptance of that disclosed limitation. A draft flag is never acceptance. |
+
+For a new policy/goal, present a real current `baseline` snapshot and the stored complete proposal before the final approval. `baseline` has the same fields as a snapshot. `approved_at` must be at or after that baseline and not in the future. Do not change the reviewed baseline merely because the user takes time to answer.
+
+After approval, obtain a separate fresh `snapshot`, with `as_of` at/after approval and a coherent full cash-flow ledger from the original boundary. The frozen baseline may now be older than the live freshness limit; only that explicitly reviewed baseline receives this exception. The current snapshot must still be fresh. Activation preserves the reviewed starting equities/times and then observes the current equity/flows, so intervening gains/losses may immediately latch a stop rather than quietly rebase it away. Changing the actual reviewed baseline/specification needs new approval; an ordinary confirmation delay does not. The helper cannot authenticate JSON assertions, identify a real user, read receipts, or interpret strategy suitability; the agent must verify those facts.
+
+| `mode` | State Transition |
+| --- | --- |
+| `start` | Only when no active policy exists. Create policy/goal IDs and positive equity/flow anchors from the reviewed `baseline`, then check the fresh `snapshot`. No CSV import or old approval reuse. |
+| `resume` | Reverify existing authority/ownership and fresh data. Use the unchanged active budget, target and mandate, not pending drafts. Preserve IDs, anchors, peaks and both latches. Verified owner handoff may retain unresolved intents for recovery, but entries stay blocked. |
+| `reauthorize` | Explicitly approve a newly saved full playbook/evidence/permission proposal with unchanged active budget/target, settled exposure/intents/costs and fresh post-approval data. Preserve both monetary baselines, IDs, ledger, peak and latches; new strategy authority does not reset financial history. No new `baseline`. |
+| `new_goal` | Explicitly approve a new target/baseline, with unchanged budget/mandate and no loss latch. Old exposure/intents/costs must be settled at both baseline and fresh observation. Preserve risk policy/peak/ledger; give the goal its reviewed equity/cash-flow anchor, then observe current data. |
+| `replace_policy` | Explicit approval of a new policy and baseline reset, a nonempty `reset_reason`, settled exposure/intents/costs at both observations. Archive old state, establish new IDs/anchors from `baseline`, then observe the fresh snapshot and all intervening flows. Never automatically release a loss stop. |
+
+`takeover_ref` records actual evidence that the prior writer has stopped and the new owner is authorized. A new string does not fence an old process. Ownership-only `resume` may hand off unresolved intents without releasing them or changing their original identities; the new verified owner can then resolve them. Unresolved intents block other activation modes and new entries. Do not automatically flatten exposure merely to change a goal/policy: use existing approved exits or obtain applicable closure authority.
+
+### Action And Outcome
+
+Every `action` includes string `id` (unique durable action/correlation ID), `kind` (`entry` or `reduce`), actual MCP `tool`, exact nonempty `parameters` object, `authority_ref`, current `policy_id` and `goal_id`, and `tool_permission: true` only when actually available. Use the real schema rather than invented universal order fields. MCP parameter numbers remain JSON numbers, not monetary strings; numbers that cannot round-trip through the tool's ordinary JSON-number representation are rejected, not rounded. Accounting remains decimal. No credentials in parameters/records; recognized credential keys are rejected rather than journaled.
+
+An `entry` also supplies approved `member_id`, approved `symbol`, unique `signal_id`, positive proposed stressed `risk`, nonnegative required `margin`, and true verified attestations `strategy_eligible`, `evidence_verified`, `broker_checks_passed`, `protective_stop_in_request`. These checks also apply to risk-increasing modifications, not just new market orders. The helper compares money/scope and records a local reservation; the agent must independently verify the facts behind every attestation.
+
+A `reduce` supplies `reason` (`management`, `protection_failure`, `loss`, or `target`), nonempty unique `tickets` from current exposure, and `reduction_verified: true`. `loss`/`target` require the corresponding observed latch. The agent must verify actual authority, original management rules, remaining volume and documented reducing semantics; an opposite entry is not necessarily a close. Never widen a stop, remove a still-needed protective order, alter manual exposure under an ordinary member-management claim, or treat a risk increase as a reduction. Safety reductions remain eligible during no-entry states; overlapping unresolved reductions on the same tickets are blocked.
+
+After a successful preparation, send the exact recorded action through MCP and then resolve it:
+
+- `outcome: "completed"` means the broker request is authoritatively settled and its result/remaining exposure/protection are verified. It can include an accepted pending order or a terminal partial fill; it does not mean the account is flat. Supply actual `broker_tickets` and genuine post-dispatch readback. Its snapshot must be later than both the preparation's source observation and its local `created_at`, not merely newer than an older pre-dispatch quote.
+- `outcome: "not_executed"` needs authoritative terminal nonexecution evidence and later verified readback. An empty order list, timeout or failed connection is insufficient. Do not invent a rejection to release a reservation.
+- `outcome: "unknown"` retains the original intent and reservation. Store available response/status evidence and reconcile through MCP. `status.outstanding_intents` exposes original action, status and available outcome/evidence for recovery. Do not resubmit the same action with a replacement ID.
+
+Distinct action IDs are never reused, including after rejection. A repeated member/signal within a goal is also rejected. Local status must not be interpreted as server-side deduplication or exactly-once execution. Invalid/stale data or a failed `prepare` cannot authorize a pending order later.
+
+## SQLite And Recovery
+
+`ace_state.sqlite3` is the sole local account checkpoint. Its sidecars/backups are private and Git-ignored. Root `risk_management.csv` and `risk_management.csv.*` records are retired and discarded without import: do not create, detect, read, migrate, depend on, or ask about them in future onboarding. Research CSV traces are unrelated supporting evidence and remain valid.
+
+The helper uses `PRAGMA user_version = 1` and three tables: singleton `state` (`id`, `revision`, JSON `payload`), append-only `events` (`id`, `at`, `command`, JSON `detail`, `state_sha256`), and `intents` (`id`, unique `signal_key`, `status`, JSON `payload`, JSON `outcome`). It uses parameterized SQL and `BEGIN IMMEDIATE` for local check/reserve/write serialization. A state/audit digest detects mismatched local edits, not authentic human approval or malicious modification of the whole database.
+
+State retains account/owner binding; pending drafts; policy/goal IDs and immutable approval/baseline/flow references; full mandate/evidence; observed peak; independent loss/target latch timestamps; last snapshot, calculations and result; and original history boundary/cursor. Events preserve replaced mandates and observations; intents preserve exact action parameters and uncertain outcomes. Never edit SQL/JSON to manufacture approval or clear a latch, reservation or peak.
+
+Import, help, tests and absent `status` do not create a production database. Only an explicit valid `draft` initializes a new checkpoint; `activate` needs that draft. Missing, corrupt, unsupported, busy or unreliable state blocks new risk, not an assumed zero exposure or a reset policy. Keep last source timestamps; `status` is cached, not current account verification.
+
+On reconnection, read `status`, verify original approval provenance and single-writer ownership, get actual MCP account/exposure/history, and reconcile every outstanding intent before risk increases. Do not demand unseen equity peaks or midnight history. Preserve same-policy peaks and both stop latches across reconnects, equity recovery, new days, accounting corrections and goal drafts. Unknown costs/history or discarded/missing real approval is unavailable, not permission.
+
+## Synthetic Checks
+
+These are arithmetic fixtures, never settings, approvals or real account facts. Automated tests are in [`tests/test_account_check.py`](../tests/test_account_check.py); run `python -m unittest discover -s tests -v` with isolated temporary databases and no MCP. `ACE_TEST_TMPDIR` may select a permitted temporary parent.
+
+| Fixture | Expected Result |
+| --- | --- |
+| Budget `5`, start equity `100`; observe `110`, then `108` | Peak `110`, stop floor `105`, remaining risk `3`. At `105`, latch the loss stop. |
+| Remaining risk `3`, existing risk `1`, proposal `1.5`, extra buffer `0.5` | Reject equality; no trade-count reset or alternative budget. |
+| Equity `300` after an external deposit `200` from a `100` start | Adjusted equity `100`, no artificial profit/peak. Repeated full ledger reads count the deposit once. |
+| Target `15`, start equity `100`, current equity `115`, remaining close costs `0.5` | Estimated gain `14.5`, not yet reached. At equity `115.5`, trigger cancellation/closure. |
+| Target triggered, later verified flat net gain `14.7` | Remain stopped; report final shortfall `0.3`, not an automatic recovery trade. |
+| Eligible approved signal, fresh verified inputs, affordable proposal and MCP permission | `prepare` records the exact action and permits real MCP dispatch; a later qualifying trade needs no separate account reapproval. |
