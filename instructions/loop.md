@@ -47,15 +47,32 @@ invent its own cadence.
 1. Read current account, positions, pending orders and history through documented MCP tools;
    build one coherent snapshot; call `cycle` (it performs the same observation and latch
    arithmetic as `check`, plus session bookkeeping).
-2. If a new candle formed, re-test the levels of symbols within a proximity band of their
-   triggers: leave valid levels alone, and cancel or re-level only when the structure that
-   justified the level has been invalidated. Use `prepare` -> the actual MCP call -> readback
-   -> `resolve` for every change.
-3. Keep per-cycle output small: cycle number, decision, equity, drawdown, remaining risk,
-   latch state, and the next boundary. Full snapshots belong in SQLite, not in the
-   conversation. Re-read bars only for symbols near a trigger, not for the whole universe
-   every cycle.
-4. Never raise risk to manufacture activity. A quiet cycle is a valid result.
+2. Enforce monetary latches and previously authorized emergency reductions first. A latch
+   invokes the whole-account cancellation/closure mandate, including manual exposure, ahead
+   of ordinary trailing, pending-order review or new entries.
+3. Apply [Active Order Management](risk-management.md#active-order-management) to existing Ace
+   positions and every Ace pending entry. Review breakeven/trailing eligibility, original
+   position invalidation and pending-entry validity, including orders far from entry triggers.
+   Use confirmed closed candles for structural decisions, but check recorded expiry and
+   current protection/session/economics conditions on fresh reads even without a new bar.
+   Leave valid setups alone; cancel invalid ones rather than chasing price. Routine changes
+   require original Ace ownership and authority; manual exposure still counts in the account
+   snapshot and risk but is not adopted for routine management.
+4. Perform required management using fresh `prepare` -> the exact MCP call -> later readback
+   -> `resolve` for every mutation. Recalculate risk from verified outcomes before considering
+   additions. Unknown outcomes block new risk, not separately authorized, safely targeted
+   safety reductions. Such reductions do not wait for a candle or entry signal.
+5. Once a new entry-timeframe candle is confirmed and required management is reconciled,
+   re-test prospective entry levels within a proximity band of their triggers. Consider fresh
+   independent setups and protect-first winner additions only under the canonical management
+   rules and a new successful `prepare`. An order's cancellation, a breakeven stop or spare
+   headroom is not itself a new signal; a missing bar or latch-only read does not permit entry.
+6. Keep per-cycle output small: cycle number, decision, equity, drawdown, remaining risk,
+   latch state, actual management results/blockers under [Outcome / Next](goals.md#compact-trading-report),
+   and the next boundary. Full snapshots belong in SQLite, not in the conversation. Read the
+   bars needed for existing position/order management and nearby prospective triggers, not
+   the whole symbol universe every cycle; entry proximity must never exclude required management.
+7. Never raise risk to manufacture activity. A quiet cycle is a valid result.
 
 ## MCP Failure
 

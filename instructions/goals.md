@@ -8,11 +8,11 @@ The only user-supplied trading settings are a positive monetary trailing-loss **
 
 The target is additional cash-flow-adjusted account equity gain from the approved goal baseline, including floating P&L and estimated incremental closing costs. It is not turnover, deposits, starting capital, a desired ending balance, or a sum of closed-trade profits that ignores open losses. The allowance does not create a virtual subaccount. All manual and other-origin exposure/costs count.
 
-Save inputs as unapproved `draft` state through the [helper contract](risk-management.md). During onboarding, Ace verifies instrument economics, current market conditions, costs and affordability, and plans multiple independent orders rather than one all-in trade. That analysis is read-only until the named-account approval below; it never authorizes orders by itself.
+Save inputs as unapproved `draft` state through the [helper contract](risk-management.md). During onboarding, Ace verifies instrument economics, current market conditions, costs and affordability, and plans orders across independent trade ideas rather than one all-in trade. Winner additions remain within their original idea allocation, not extra diversification. That analysis is read-only until the named-account approval below; it never authorizes orders by itself.
 
-Present one final named-account confirmation of the account identity, amounts, baseline values/source timestamps, observed-only trailing definition, approved symbol universe, current market read, normal management and account-wide cancellation/closure at either trigger. Disclose that only active AI snapshots check the monetary limits; missed peaks/breaches, gaps and delayed closes can overshoot them. A provided target or an optimistic analysis is not that approval.
+Present one final named-account confirmation of the account identity, amounts, baseline values/source timestamps, observed-only trailing definition, approved symbol universe, current market read, [Active Order Management](risk-management.md#active-order-management) and account-wide cancellation/closure at either trigger. Explicitly include Ace-only adaptive cost-aware breakeven/trailing stops, early invalidation exits, cancellation of invalid pending entries and protect-first winner additions within the original idea allocation; routine management does not adopt manual trades. Disclose that only active AI snapshots check monetary limits or adjust stops; missed peaks/breaches, gaps and delayed closes can overshoot them. A provided target or an optimistic analysis is not that approval.
 
-After real approval, activate/reconcile using the reviewed baseline plus a separate fresh post-approval snapshot. Preserve the baseline while the user reviews it; intervening equity/cash-flow changes are checked, not silently rebased. An eligible approved order with a successful fresh preparation may be placed through MT5 MCP without per-trade confirmation, subject to actual client/broker permissions. No compliant signal or affordable minimum lot means no trade. There is no target deadline, forced trade volume, automatic risk increase or promised return.
+After real approval, activate/reconcile using the reviewed baseline plus a separate fresh post-approval snapshot. Preserve the baseline while the user reviews it; intervening equity/cash-flow changes are checked, not silently rebased. Handle latches and required existing-position/pending-order management before new exposure. An eligible approved order with a successful fresh preparation may be placed through MT5 MCP without per-trade confirmation, subject to actual client/broker permissions. No compliant signal or affordable minimum lot means no trade. There is no target deadline, forced trade volume, automatic risk increase or promised return.
 
 ## Equity-Based Progress
 
@@ -50,7 +50,7 @@ Under the final approved whole-account mandate:
 
 The stop stays latched after slippage, rejected/partial closes, equity recovery, profit falling below target, later cost corrections, new days and reconnects. Do not automatically trade to make up a shortfall. If a loss stop is also latched, loss handling takes precedence; neither latch hides the other.
 
-Before a trigger, positions retain their original approved exits/ownership except for an explicitly approved transition. No-entry regimes or target/loss latches do not prevent identity-verified, previously authorized protective management and reductions. After a whole-account trigger, that cancellation/closure mandate overrides normal position holding periods.
+Before a trigger, positions retain their original approved exits/ownership except for an explicitly approved transition; the [active management rules](risk-management.md#active-order-management) do not retroactively expand authority. No-entry regimes or target/loss latches do not prevent identity-verified, previously authorized protective management and reductions. After a whole-account trigger, that cancellation/closure mandate overrides normal position holding periods, trailing decisions and add-on plans.
 
 ## Final Result And Resume
 
@@ -73,14 +73,16 @@ Target / Progress: <target; goal-start equity/time; estimated net gain; incremen
 Authority / Analysis: <draft/approved; approved symbol universe; current market read and its invalidation conditions, or no-entry reason>
 Stop / Exposure: <target/loss latch; open/pending exposure; unresolved intent; closure pending or verified>
 Loop: <session id; active/interrupted/closing/closed; cycles; entry timeframe; last confirmed bar; max observed gap; end reason or next candle boundary>
-Outcome / Next: <actual MCP result or blocker; final net/shortfall when verified; next permitted action>
+Outcome / Next: <action/ticket and reason; verified stop change, cancellation/closure/fill or blocker; final net/shortfall when verified; next permitted action>
 ```
 
 During a [loop session](loop.md) the `Loop` line is mandatory. Report the largest observation gap honestly: while it was open, the monetary limits were unwatched and only broker stops protected the account.
 
+For management, keep `Outcome / Next` concise but distinguish proposed, broker-verified and unknown outcomes. Include old/new SL for a verified stop change, the invalidation/expiry reason and actual remaining exposure for a cancellation or close, or why a valid order was left unchanged. For a winner addition, identify the original idea and show its allocation/use alongside account-wide headroom; a breakeven stop is not zero give-back risk. Do not claim canceled, protected or closed on submission alone.
+
 Do not substitute the report-generation time for stale source timestamps, invent zero balances or assume a missing database is approved. Label the last actual snapshot/check; do not imply continuing monitoring, execution or reporting while inactive.
 
-At the final-approval stage, supplement the compact report with the approved broker symbol universe and the specific market reads that justify the planned orders: timeframes and source timestamps, direction or range, volatility, spread relative to planned stops, session, invalidation levels, instrument economics, costs and margin, planned order count, and the total stressed risk against the remaining budget. One full question may authorize the named-account mandate only when it explicitly requests both that account and those limits.
+At the final-approval stage, supplement the compact report with the approved broker symbol universe and the specific market reads that justify the planned orders: timeframes and source timestamps, direction or range, volatility, spread relative to planned stops, session, invalidation levels, instrument economics, costs and margin, planned order count, and the total stressed risk against the remaining budget. Include the original management conditions for those ideas: breakeven/trailing method, invalidation/expiry exits, whether winner additions are eligible and their fixed original idea allocation. One full question may authorize the named-account mandate only when it explicitly requests both that account and those limits; later eligible actions within it need no separate per-trade confirmation.
 
 ## Synthetic Workflow Checks
 

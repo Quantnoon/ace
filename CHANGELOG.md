@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- [Active Order Management](instructions/risk-management.md#active-order-management): Ace-only adaptive cost-aware breakeven/trailing stops, early invalidation exits, invalid pending-entry cancellation and protect-first additions to winners within the original idea's fixed risk allocation.
+- Synthetic management scenarios covering broker restrictions, cancellation/fill uncertainty, profit give-back, add-on eligibility and account-wide stop precedence.
+
+### Changed
+
+- Decision-cycle instructions prioritize existing-position and pending-entry management before new exposure, including pending setups far from entry triggers; clarify `check` versus loop-session `cycle` usage.
+- Named-account approval and compact reporting explicitly cover management scope, original trade conditions and verified action outcomes without changing the helper, database schema or existing monetary limits.
+
 ## [1.4.0] - 2026-11-04
 
 ### Added
