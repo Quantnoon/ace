@@ -59,7 +59,7 @@ There is no fixed trade-count cap. One unresolved dispatch at a time is a local 
 
 ## Helper Boundary And CLI
 
-[`scripts/account_check.py`](../scripts/account_check.py) uses Python's standard library only. It has no MT5 library, networking, credentials, order sender, scheduler or background loop. The agent obtains real MCP facts and executes actual MCP orders. A passing local check cannot fence manual traders, copied repositories, account switches or a change between check and dispatch. There is no independent continuous guard or guaranteed monetary cap/return.
+[`scripts/account_check.py`](../scripts/account_check.py) uses Python's standard library only. It has no MT5 library, networking, credentials, order sender, scheduler or background loop. The agent obtains real MCP facts and executes actual MCP orders. A passing local check cannot fence manual traders, copied repositories, account switches or a change between check and dispatch. There is no independent continuous guard or guaranteed monetary cap/return. The `cycle` command records loop-session observations and the next candle boundary; it neither waits nor wakes itself.
 
 Invoke `python scripts/account_check.py <command>`, supplying a JSON object through standard input or `--input <private-json-file>`. `status` needs no input. The default database is repository-root `ace_state.sqlite3`, independent of working directory; `--db <path>` exists for isolated tests or an explicitly managed location, not parallel trading ledgers. Do not initialize a real database to test the helper.
 
@@ -74,6 +74,7 @@ All mutating requests include `owner_id` (the verified single local writer ident
 | `draft` | `account`, `source_ref`, supplied `budget` and/or `target`, and optionally the complete agent-prepared `mandate` proposal. Creates the database only during actual onboarding. Updates pending drafts, not active authority. Save the full proposed mandate before requesting final approval. |
 | `activate` | `mode`, `mandate`, fresh `snapshot`, `approval_ref`, `approved_at`; reviewed approved `baseline` for `start`, `new_goal` and `replace_policy`; `reset_reason` for `replace_policy`, `takeover_ref` when changing `owner_id`. Except unchanged `resume`, both money amounts and the exactly matching mandate must already be saved as a draft. |
 | `check` | `snapshot`. Records an actual observation, computes limits and latches; does not prepare an order. Call on every active decision cycle, even without an entry signal. |
+| `cycle` | `snapshot`, plus optional `timeframe`, `bar`, `market_state`, `buffer_seconds`. Records one loop-session cycle and the next candle boundary; never ends a session except on a monetary latch. Take it instead of `check` during a [loop session](loop.md). |
 | `prepare` | `snapshot`, `action`. Rechecks and transactionally records the exact action and its entry-risk reservation before MCP dispatch. |
 | `resolve` | `snapshot`, `intent_id`, `outcome`, `evidence_ref`; `readback_verified: true` for settled outcomes and nonempty `broker_tickets` for `completed`. |
 | `status` | No JSON required. Read-only cached state, revision and outstanding intent details; absent database means unconfigured and does not create a file. |
@@ -116,6 +117,8 @@ Missing proposal, exposure, margin or exit-cost inputs do not suppress a separat
 | `allow_entries`, `allow_management` | Requested permissions in an unapproved proposal; at activation, `true` only when real approval permits entries and normal management. |
 | `close_all_on_loss`, `close_all_on_target` | Proposed whole-account cancellation/closure permissions, including manual exposure; at activation, `true` only when actual approval grants them. |
 | `accept_observed_only` | The proposal discloses active-snapshot-only checks and possible missed peaks/breaches/overshoots. At activation, `true` requires actual acceptance of that disclosed limitation. A draft flag is never acceptance. |
+| `entry_timeframe` | Optional closed-candle timeframe that paces a [loop session](loop.md). Absent means M15; changing it on an active mandate is a reauthorization, not a mid-session switch. |
+| `latch_check_seconds` | Optional latch-only tripwire interval for a loop session; `0` or absent means candle-only cadence. It can trip a stop earlier but never authorizes an entry. |
 
 For a new policy/goal, present a real current `baseline` snapshot and the stored complete proposal before the final approval. `baseline` has the same fields as a snapshot. `approved_at` must be at or after that baseline and not in the future. Do not change the reviewed baseline merely because the user takes time to answer.
 
@@ -151,7 +154,9 @@ Distinct action IDs are never reused, including after rejection. A repeated symb
 
 `ace_state.sqlite3` is the sole local account checkpoint. Its sidecars/backups are private and Git-ignored. Root `risk_management.csv` and `risk_management.csv.*` records are retired and discarded without import: do not create, detect, read, migrate, depend on, or ask about them in future onboarding.
 
-The helper uses `PRAGMA user_version = 1` and three tables: singleton `state` (`id`, `revision`, JSON `payload`), append-only `events` (`id`, `at`, `command`, JSON `detail`, `state_sha256`), and `intents` (`id`, unique `signal_key`, `status`, JSON `payload`, JSON `outcome`). It uses parameterized SQL and `BEGIN IMMEDIATE` for local check/reserve/write serialization. A state/audit digest detects mismatched local edits, not authentic human approval or malicious modification of the whole database.
+The helper uses `PRAGMA user_version = 2` and three tables: singleton `state` (`id`, `revision`, JSON `payload`), append-only `events` (`id`, `at`, `command`, JSON `detail`, `state_sha256`), and `intents` (`id`, unique `signal_key`, `status`, JSON `payload`, JSON `outcome`). It uses parameterized SQL and `BEGIN IMMEDIATE` for local check/reserve/write serialization. A state/audit digest detects mismatched local edits, not authentic human approval or malicious modification of the whole database.
+
+Version 1 checkpoints stay readable and are upgraded in place on the next write; the migration only adds an empty `loop` record and never touches policy/goal anchors, the observed peak, latches, drafts or unresolved intents. Loop sessions are stored inside `state` rather than in extra tables.
 
 State retains account/owner binding; pending drafts; policy/goal IDs and immutable approval/baseline/flow references; the full mandate; observed peak; independent loss/target latch timestamps; last snapshot, calculations and result; and original history boundary/cursor. Events preserve replaced mandates and observations; intents preserve exact action parameters and uncertain outcomes. Never edit SQL/JSON to manufacture approval or clear a latch, reservation or peak.
 

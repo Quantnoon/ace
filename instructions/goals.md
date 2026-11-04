@@ -72,8 +72,11 @@ Budget / Risk: <budget; observed adjusted peak; drawdown; remaining money; stop 
 Target / Progress: <target; goal-start equity/time; estimated net gain; incremental close costs; progress/remaining>
 Authority / Analysis: <draft/approved; approved symbol universe; current market read and its invalidation conditions, or no-entry reason>
 Stop / Exposure: <target/loss latch; open/pending exposure; unresolved intent; closure pending or verified>
+Loop: <session id; active/interrupted/closing/closed; cycles; entry timeframe; last confirmed bar; max observed gap; end reason or next candle boundary>
 Outcome / Next: <actual MCP result or blocker; final net/shortfall when verified; next permitted action>
 ```
+
+During a [loop session](loop.md) the `Loop` line is mandatory. Report the largest observation gap honestly: while it was open, the monetary limits were unwatched and only broker stops protected the account.
 
 Do not substitute the report-generation time for stale source timestamps, invent zero balances or assume a missing database is approved. Label the last actual snapshot/check; do not imply continuing monitoring, execution or reporting while inactive.
 
