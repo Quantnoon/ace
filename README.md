@@ -6,7 +6,7 @@
 
 Client-neutral instructions for an AI agent that analyses markets and trades a MetaTrader 5 (MT5) account through an MT5 Model Context Protocol (MCP) server, with a small Python/SQLite account checker. You supply a monetary trailing-loss budget and a profit target; the agent reads the market itself and decides which orders to place. The mandate covers the whole named account, including manual exposure.
 
-Version: **[1.4.0](VERSION)** | [Changelog](CHANGELOG.md)
+Version: **[1.5.0](VERSION)** | [Changelog](CHANGELOG.md)
 
 ## Getting Started
 

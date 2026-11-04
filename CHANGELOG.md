@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-04
+
 ### Added
 
 - [Active Order Management](instructions/risk-management.md#active-order-management): Ace-only adaptive cost-aware breakeven/trailing stops, early invalidation exits, invalid pending-entry cancellation and protect-first additions to winners within the original idea's fixed risk allocation.
