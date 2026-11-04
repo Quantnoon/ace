@@ -572,6 +572,102 @@ class AccountCheckTests(unittest.TestCase):
         self.assertEqual(legacy.read_text(encoding="utf-8"), "untrusted,legacy,records\nnot,new,approval\n")
         self.assertNotIn("untrusted", checker.encode(self.state()))
 
+    def bar(self, minutes_ago=0):
+        moment = self.now - timedelta(minutes=minutes_ago)
+        return {"open_time": checker.utc(moment.replace(second=0, microsecond=0)), "confirmed": True}
+
+    def test_cycle_opens_session_and_schedules_next_candle(self):
+        self.start()
+        result = self.call("cycle", snapshot=self.snap(), bar=self.bar())
+        loop = result["loop"]
+        self.assertTrue(result["may_continue"])
+        self.assertEqual(loop["status"], "active")
+        self.assertEqual(loop["cycles"], 1)
+        self.assertEqual(loop["timeframe"], "M15")
+        self.assertEqual(loop["market_state"], "open")
+        self.assertTrue(loop["bar_confirmed"])
+        expected = checker.next_boundary(checker.stamp(self.state()["last_snapshot"]["as_of"], "as_of"), "M15", 5)
+        self.assertEqual(loop["next_cycle_at"], checker.utc(expected))
+        self.assertGreater(loop["next_cycle_at"], self.state()["last_snapshot"]["as_of"])
+
+    def test_cycle_records_gap_and_missing_bar_without_ending(self):
+        self.start()
+        closed_bar = self.bar(minutes_ago=15)
+        first = self.call("cycle", snapshot=self.snap(), bar=closed_bar)
+        self.assertEqual(first["loop"]["cycles"], 1)
+        self.now += timedelta(minutes=20)
+        second = self.call("cycle", snapshot=self.snap(), bar=closed_bar)
+        loop = second["loop"]
+        self.assertTrue(second["may_continue"])
+        self.assertEqual(loop["status"], "active")
+        self.assertEqual(loop["cycles"], 2)
+        self.assertEqual(loop["missing_bars"], 1)
+        self.assertFalse(loop["bar_advanced"])
+        self.assertGreaterEqual(loop["gap_seconds"], 1200)
+        self.assertGreaterEqual(loop["max_gap_seconds"], loop["gap_seconds"])
+
+    def test_cycle_market_closed_and_no_bar_still_continues(self):
+        self.start()
+        result = self.call("cycle", snapshot=self.snap(), bar=self.bar(minutes_ago=60),
+                           market_state="closed")
+        self.assertTrue(result["may_continue"])
+        self.assertEqual(result["loop"]["status"], "active")
+        self.assertEqual(result["loop"]["market_state"], "closed")
+
+    def test_cycle_latches_and_closes_only_after_verified_flat(self):
+        self.start(budget="5", target="15")
+        sample = self.snap(equity="94", pending_orders=[{"ticket": "o1", "symbol": "EURUSD",
+                                                         "kind": "entry", "protected": True, "risk": "1"}])
+        result = self.call("cycle", snapshot=sample, bar=self.bar())
+        self.assertFalse(result["may_continue"])
+        self.assertEqual(result["loop"]["status"], "closing")
+        self.assertEqual(result["loop"]["end_reason"], "loss_latch")
+        self.assertIsNone(result["loop"]["ended_at"])
+        final = self.call("cycle", snapshot=self.snap(equity="94"), bar=self.bar())
+        self.assertEqual(final["loop"]["status"], "closed")
+        self.assertEqual(final["loop"]["end_reason"], "loss_latch")
+        self.assertIsNotNone(final["loop"]["ended_at"])
+        self.assertFalse(final["may_continue"])
+
+    def test_cycle_rejects_invalid_timing_inputs(self):
+        self.start()
+        for timeframe in ("M7", "m15", "", None, 15):
+            with self.subTest(timeframe=repr(timeframe)):
+                result = self.call("cycle", snapshot=self.snap(), timeframe=timeframe)
+                self.assertIn("invalid_timeframe", result["reason_codes"])
+                self.assertTrue(result["may_continue"])
+                self.assertIsNone(result["loop"])
+        result = self.call("cycle", snapshot=self.snap(), buffer_seconds=90)
+        self.assertIn("invalid_buffer_seconds", result["reason_codes"])
+        result = self.call("cycle", snapshot=self.snap(), market_state="holiday")
+        self.assertIn("invalid_market_state", result["reason_codes"])
+        future = self.now + timedelta(minutes=5)
+        result = self.call("cycle", snapshot=self.snap(),
+                           bar={"open_time": checker.utc(future), "confirmed": True})
+        self.assertIn("future_bar", result["reason_codes"])
+        self.assertEqual(self.state()["loop"], None)
+
+    def test_cycle_rejects_stale_snapshot_without_counting_a_cycle(self):
+        self.start()
+        self.call("cycle", snapshot=self.snap(), bar=self.bar())
+        cycles = self.state()["loop"]["cycles"]
+        stale = self.snap()
+        self.now += timedelta(seconds=120)
+        result = self.call("cycle", snapshot=stale, bar=self.bar())
+        self.assertIn("stale_or_future_snapshot", result["reason_codes"])
+        self.assertTrue(result["may_continue"])
+        self.assertEqual(self.state()["loop"]["cycles"], cycles)
+
+    def test_schema_v1_state_migrates_on_next_write(self):
+        self.start()
+        with closing(sqlite3.connect(self.db)) as connection, connection:
+            connection.execute("PRAGMA user_version = 1")
+        result = self.call("cycle", snapshot=self.snap(), bar=self.bar())
+        self.assertTrue(result["may_continue"])
+        with closing(sqlite3.connect(self.db)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(self.state()["loop"]["cycles"], 1)
+
     def test_cli_json_path_independence_and_invalid_requests(self):
         base = [sys.executable, checker.__file__]
         body = {"owner_id": "synthetic-owner", "expected_revision": 0, "account": ACCOUNT,

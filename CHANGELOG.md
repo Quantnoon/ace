@@ -1,5 +1,34 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.5.0] - 2026-11-04
+
+### Added
+
+- [Active Order Management](instructions/risk-management.md#active-order-management): Ace-only adaptive cost-aware breakeven/trailing stops, early invalidation exits, invalid pending-entry cancellation and protect-first additions to winners within the original idea's fixed risk allocation.
+- Synthetic management scenarios covering broker restrictions, cancellation/fill uncertainty, profit give-back, add-on eligibility and account-wide stop precedence.
+
+### Changed
+
+- Decision-cycle instructions prioritize existing-position and pending-entry management before new exposure, including pending setups far from entry triggers; clarify `check` versus loop-session `cycle` usage.
+- Named-account approval and compact reporting explicitly cover management scope, original trade conditions and verified action outcomes without changing the helper, database schema or existing monetary limits.
+
+## [1.4.0] - 2026-11-04
+
+### Added
+
+- Loop sessions: [instructions/loop.md](instructions/loop.md) defines cadence, outage handling, interruption and end conditions for a "keep working until the budget or target" request.
+- `cycle` helper command recording one session cycle, the confirmed entry-timeframe bar, the observed gap and the next candle boundary. It replaces `check` during a loop but performs the same observation and latch arithmetic.
+- Optional mandate fields `entry_timeframe` (default M15 when absent) and `latch_check_seconds` (default 0, candle-only cadence).
+
+### Changed
+
+- Loop cadence follows the closed candle of the entry timeframe instead of a fixed polling interval; the helper returns `next_cycle_at` including the settle buffer.
+- MCP outages are retried indefinitely with backoff and recorded as gaps; they never end a session, advance a cycle, or reuse a previous observation as a fresh snapshot.
+- Only an observed loss or target latch ends a session, and only after verified flat exposure. Quiet markets, closed instruments, missing candles and interruptions never end it.
+- SQLite checkpoint schema is now version 2. Version 1 files stay readable and migrate in place on the next write without touching anchors, peak, latches, drafts or unresolved intents.
+
 ## [1.3.0] - 2026-11-03
 
 ### Removed

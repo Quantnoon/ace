@@ -4,11 +4,11 @@
 
 After read-only MT5 account verification, collect a positive monetary **budget** and **target**, in the verified account currency. These are the only user-supplied trading settings. Accept both together; ask one focused question only for missing or ambiguous amounts/currency. No percentage-risk, daily-limit, per-trade-cap, capital-allocation or routine symbol-selection questionnaire. There are no monetary defaults. A dollar sign does not necessarily mean USD.
 
-The budget is a fixed-money trailing-loss allowance over the whole connected account, not segregated capital, a per-trade allowance, or a cumulative sum of losing trades. The account may contain much more equity. All manual/other-origin positions, pending orders, floating P&L and costs count. Ace chooses sizing and the number of qualifying orders, subject to actual broker affordability and remaining headroom, and spreads risk across several independent orders instead of committing the budget to one trade. An unaffordable minimum lot means no trade, not a larger budget.
+The budget is a fixed-money trailing-loss allowance over the whole connected account, not segregated capital, a per-trade allowance, or a cumulative sum of losing trades. The account may contain much more equity. All manual/other-origin positions, pending orders, floating P&L and costs count. Ace chooses sizing and the number of qualifying orders, subject to actual broker affordability and remaining headroom, and spreads risk across independent trade ideas instead of committing the budget to one trade. Controlled additions to a winner remain part of its original idea, not extra diversification, under [Active Order Management](#active-order-management). An unaffordable minimum lot means no trade, not a larger budget.
 
 Save supplied values through `draft` only after verifying their account binding. Drafts do not approve a goal, replace an active policy, reset its peak or release a stop. Reuse existing valid drafts as drafts and actual approval only after verifying its provenance. Analysis-only sessions, connection-only checks and instruction maintenance must not create account state.
 
-The one final named-account approval must cover login/server/demo-live type/currency; both monetary amounts; observed-only trailing behavior; exact policy/goal baselines and source timestamps; the approved broker symbol universe; the current market read and its invalidation conditions; normal management permissions; and cancellation/closure of **all account exposure including manual trades** at either trigger. Disclose inactivity, missed peaks/breaches, execution delays and overshoots. Supplying amounts, an example or a stored boolean is not approval.
+The one final named-account approval must cover login/server/demo-live type/currency; both monetary amounts; observed-only trailing behavior; exact policy/goal baselines and source timestamps; the approved broker symbol universe; the current market read and its invalidation conditions; Ace-only adaptive breakeven/trailing stops, invalidation exits, pending-entry cancellation and protect-first winner additions under [Active Order Management](#active-order-management); and cancellation/closure of **all account exposure including manual trades** at either trigger. Disclose inactivity, missed peaks/breaches, execution delays and overshoots. Supplying amounts, an example or a stored boolean is not approval.
 
 After that approval, an eligible action passing the checks below may be submitted through the actual MT5 MCP tool without another per-trade confirmation. Client tool permissions still apply. The helper neither grants those permissions nor places an order.
 
@@ -39,7 +39,7 @@ entry_fits = existing_stressed_risk + proposed_stressed_risk
 
 Initialize `H` only at a genuinely approved new policy baseline. It follows the highest equity **actually observed** after cash-flow adjustment; do not invent unseen peaks or reconstruct continuous equity from closed deals. There is no midnight reset. Deposits/withdrawals do not create profit, drawdown or a new adjusted peak. Policy and goal anchors may differ; keep their cash-flow windows separate.
 
-Equality breaches the loss budget, and equality in prospective allocation is unaffordable. Do not round comparisons to display precision, clamp negative headroom, or enlarge the budget after gains. `H >= A`, so remaining headroom never exceeds `B`. Use full-precision decimal arithmetic.
+Equality breaches the loss budget, and equality against remaining account-wide headroom is unaffordable. Do not round comparisons to display precision, clamp negative headroom, or enlarge the budget after gains. `H >= A`, so remaining headroom never exceeds `B`. Use full-precision decimal arithmetic.
 
 At either observed trigger, latch off new risk, cancel all pending entries and close all account positions under the approved mandate. Keep protective orders until their positions are safely closed, then reconcile orphan orders and late fills. Loss-stop handling takes precedence if both triggers apply. A submitted close is not verified flat exposure.
 
@@ -57,9 +57,64 @@ The target estimate deducts only incremental closing charges/slippage not alread
 
 There is no fixed trade-count cap. One unresolved dispatch at a time is a local recovery safeguard, not a limit on the number of verified open positions or subsequent qualifying trades. Normal actions retain their original management rules; no-entry regimes do not prevent already authorized reductions. Missing helper/state must not delay identity-verified, previously approved emergency reductions through MCP.
 
+## Active Order Management
+
+On each active decision cycle, obtain a fresh account/exposure/history snapshot and use `check`, or `cycle` instead during a loop session. Enforce monetary latches and authorized emergency reductions first, manage existing positions and pending entries next, and consider new exposure only after required management outcomes are verified. Position-level trailing SL does not replace the account-wide trailing budget. Neither trailing nor breakeven adjustments run while the AI is inactive; only the last accepted broker protection remains in place.
+
+### Original Plan And Authority
+
+Before entry, record the thesis, approved symbol/direction/timeframe, initial protection, invalidation conditions, justified expiry/session/event conditions, cost-aware breakeven trigger, trailing method and eligibility for continuation additions in the actual analysis evidence referenced by `analysis_ref`. Bind it to the original entry action and the named-account authority referenced by `authority_ref`; verify actual fills, costs and ticket bindings on readback. Ace derives these choices from current structure, volatility, spread and economics, not a universal pip distance or fixed R threshold. They are not extra user trading settings or separate per-trade approval requests. Adaptive management applies the recorded method to new verified data; it does not rewrite a losing trade's invalidation or exits.
+
+Routine management applies only to verified Ace-owned exposure covered by that original authority and plan. Manual/other-origin exposure still counts in account risk and is covered by the approved whole-account loss/target closures, but must not be adopted or modified under a routine management claim. Adding these instructions does not expand an earlier approval: preserve existing exits unless they already permit this behavior, otherwise use explicit reauthorization and its settlement requirements before expanding scope. Do not flatten positions just to adopt new rules or reset any baseline, peak or latch.
+
+Recover the actual analysis/approval evidence and original action records on resumption. Missing ownership, original conditions or risk allocation blocks the affected discretionary changes/additions, not separately verified, previously authorized safety reductions. The helper stores action references and accounting, but does not independently enforce these market-management conditions or authenticate evidence. Do not invent helper fields, edit SQL, create a second ledger or manufacture missing history.
+
+### Running Positions
+
+1. Review each Ace position's actual direction, remaining volume, fills, accepted SL/TP and associated protection. Use confirmed closed candles for ordinary structural decisions, with fresh quotes and verified costs for dispatch. Previously authorized, identity-verified safety reductions do not wait for a new candle or an entry signal.
+2. Move to **breakeven** only after the recorded favorable-move condition is met and the market has enough room for a valid stop. Calculate the estimated net-zero exit using verified payoff/conversion, executable price-side semantics, attributable entry/exit charges, financing and stressed closing slippage. Entry price alone need not cover costs. Attributable booked charges may inform this trade-level exit estimate but must not be deducted again from account equity or goal progress. Unknown economics/costs block a guessed breakeven move; gaps, slippage and late charges mean even a cost-aware stop never guarantees zero loss.
+3. **Trail** behind newly confirmed higher lows/support for a long or lower highs/resistance for a short, using the recorded method and a justified volatility/spread buffer. For both trailing and breakeven, a new long SL must be higher than the currently accepted SL; a new short SL must be lower. Never move a stronger profit-locking stop back to breakeven. Check the broker's actual trigger-price side, tick size, stop/freeze distances and modification permissions after rounding. Skip identical, noise-driven or invalid changes; choose one valid improving stop when breakeven and trailing conditions overlap. If no tighter valid level exists, retain the accepted protection, never loosen or remove it to make an update pass.
+4. **Close on invalidation** when fresh evidence confirms the original exit condition. Use true position-close semantics and verify any remaining volume rather than waiting for the old SL or moving the invalidation farther away. Do not automatically reverse or re-enter after that exit. Preserve unrelated TP/protection during stop updates; this policy adds no partial-profit-taking or TP-redesign rule.
+
+On hedging accounts, verify each affected ticket and its protection. On netting accounts, an add or SL update can affect the aggregated position: verify original deal/volume ownership, effective stop and protection of every earlier leg. Never let an add overwrite the aggregate SL with a weaker stop. If manual exposure is mixed in, or the affected ownership/protection cannot be verified without changing it, skip routine changes/additions instead of inventing isolated positions or authority. An opposite entry may hedge or reverse rather than close.
+
+### Pending Entries
+
+- Review every Ace pending entry's recorded validity, not only orders near the current price. Retain a still-valid setup. Cancel when confirmed structure invalidates it, its recorded expiry is reached, or its recorded session/event/economics conditions cease to hold. Mere age, distance from price, a new candle or missing data is not invented proof of invalidation. Report unavailable evidence and block affected additions; separately authorized safety cancellations still require verified targeting and authority.
+- Cancel an unfilled **entry** with the documented order-cancel operation; close a resulting position with position-close semantics. Do not treat a native SL/TP or necessary protective pending order as a stale entry. Preserve protection until its position is safely closed.
+- Do not re-level an order just to chase price. For a replacement, prefer cancel -> authoritative readback and `resolve` -> genuinely fresh valid setup -> new `prepare`. Do not release risk on a submitted cancellation, blindly recreate the same signal under a new ID, or assume a timeout/empty order list proves nonexecution. Reconcile partial or late fills, resulting positions and remaining orders before further risk increases, preserving their original bindings and protection.
+- Cancel a dependent unfilled add when its required parent exposure closes or its thesis/protection conditions fail. If it has already filled, reconcile and manage the actual position under its original plan, not a fictitious successful cancellation. Do not stage an unchecked ladder of adds that can bypass protect-first eligibility.
+
+### New Orders And Winner Additions
+
+Spare headroom, a canceled order, a closed trade or a profitable position is not by itself a signal. New market/pending entries need fresh analysis within the approved universe, a genuinely distinct signal/action identity, verified stops/economics/margin and every check in [Before Each Risk Increase](#before-each-risk-increase). There is no forced replacement or target-driven turnover.
+
+An addition to a winner also requires the original thesis to remain valid, a fresh favorable continuation setup, and **every earlier open leg of that idea to be individually profitable after attributable costs and protected by a verified cost-aware breakeven-or-better stop**. Aggregate profit must not hide a losing or unprotected leg. Verify earlier protection before preparing the add; a proposed stop move does not qualify. If the original allocation or earlier-leg bindings cannot be recovered, do not add.
+
+Treat the original entry and every related continuation leg/pending entry as one idea. Its fixed allocation is the first entry action's recorded proposed stressed `risk`, chosen by Ace before entry. Never expand it after gains, fills, later additions, closes or reconnects, or label the same thesis independent to evade it. These are admission calculations, not new JSON fields or a separate account budget/latch:
+
+```text
+idea_limit = original entry action's recorded stressed risk
+idea_open_risk + idea_pending_risk + proposed_risk <= idea_limit
+all_account_existing_risk + proposed_risk + safety_margin < remaining_risk
+```
+
+Open risk is current-mark-to-stressed-stop loss, including floating-profit give-back; pending/proposed risk is stressed entry-to-stop loss. Include all compatible pending fills, costs and stress exactly once. **Breakeven does not make existing risk zero.** Do not offset correlated exposure, spend anticipated profits/cancellations or increase lot sizes to chase the target. Size each sequential add within both limits using fresh verified exposure after previous actions resolve. The idea limit gates additions; it is not authority to force a close or tighten a stop without a valid management reason.
+
+### Dispatch And Recovery
+
+| Intended Action | Existing Helper Classification |
+| --- | --- |
+| Verified SL tightening or breakeven move | `kind: "reduce"`, `reason: "management"`, only with actual reducing semantics, original authority and verified tickets. |
+| Cancel invalid Ace pending entry or close invalidated Ace position | `kind: "reduce"`, `reason: "management"`; verify entry/protection classification and cancel/remaining-volume semantics. |
+| New order or winner addition | `kind: "entry"`; fresh analysis, broker checks, protection and full stressed-risk reservation. Never disguise it as a reduction. |
+| Observed account loss/target stop | Existing `loss`/`target` reduction authority overrides routine management and covers all account exposure, including manual trades. |
+
+Use fresh `prepare` -> exact documented MCP action -> later broker readback -> `resolve` for each ordinary mutation. Only `may_dispatch: true` permits that recorded action; `may_continue`, `check` and exit code zero do not. Verify actual SL/TP, tickets, fills, remaining volume/orders and cancellation/closure status, then recalculate stressed risk from the verified result. After a rejection, read back whether the old protection remains and report the result rather than claiming an improvement. Ambiguous changes, timeouts and unsettled partial outcomes retain their original unresolved intent and block additions: no blind retry, replacement identity or assumed release of headroom. Helper failure must not delay previously authorized, identity-verified emergency reductions through safely targeted MCP tools.
+
 ## Helper Boundary And CLI
 
-[`scripts/account_check.py`](../scripts/account_check.py) uses Python's standard library only. It has no MT5 library, networking, credentials, order sender, scheduler or background loop. The agent obtains real MCP facts and executes actual MCP orders. A passing local check cannot fence manual traders, copied repositories, account switches or a change between check and dispatch. There is no independent continuous guard or guaranteed monetary cap/return.
+[`scripts/account_check.py`](../scripts/account_check.py) uses Python's standard library only. It has no MT5 library, networking, credentials, order sender, scheduler or background loop. The agent obtains real MCP facts and executes actual MCP orders. A passing local check cannot fence manual traders, copied repositories, account switches or a change between check and dispatch. There is no independent continuous guard or guaranteed monetary cap/return. The `cycle` command records loop-session observations and the next candle boundary; it neither waits nor wakes itself.
 
 Invoke `python scripts/account_check.py <command>`, supplying a JSON object through standard input or `--input <private-json-file>`. `status` needs no input. The default database is repository-root `ace_state.sqlite3`, independent of working directory; `--db <path>` exists for isolated tests or an explicitly managed location, not parallel trading ledgers. Do not initialize a real database to test the helper.
 
@@ -73,7 +128,8 @@ All mutating requests include `owner_id` (the verified single local writer ident
 | --- | --- |
 | `draft` | `account`, `source_ref`, supplied `budget` and/or `target`, and optionally the complete agent-prepared `mandate` proposal. Creates the database only during actual onboarding. Updates pending drafts, not active authority. Save the full proposed mandate before requesting final approval. |
 | `activate` | `mode`, `mandate`, fresh `snapshot`, `approval_ref`, `approved_at`; reviewed approved `baseline` for `start`, `new_goal` and `replace_policy`; `reset_reason` for `replace_policy`, `takeover_ref` when changing `owner_id`. Except unchanged `resume`, both money amounts and the exactly matching mandate must already be saved as a draft. |
-| `check` | `snapshot`. Records an actual observation, computes limits and latches; does not prepare an order. Call on every active decision cycle, even without an entry signal. |
+| `check` | `snapshot`. Records an actual observation, computes limits and latches; does not prepare an order. Call on every ordinary active decision cycle, even without an entry signal; use `cycle` instead during a loop session. |
+| `cycle` | `snapshot`, plus optional `timeframe`, `bar`, `market_state`, `buffer_seconds`. Records one loop-session cycle and the next candle boundary; never ends a session except on a monetary latch. Take it instead of `check` during a [loop session](loop.md). |
 | `prepare` | `snapshot`, `action`. Rechecks and transactionally records the exact action and its entry-risk reservation before MCP dispatch. |
 | `resolve` | `snapshot`, `intent_id`, `outcome`, `evidence_ref`; `readback_verified: true` for settled outcomes and nonempty `broker_tickets` for `completed`. |
 | `status` | No JSON required. Read-only cached state, revision and outstanding intent details; absent database means unconfigured and does not create a file. |
@@ -116,6 +172,8 @@ Missing proposal, exposure, margin or exit-cost inputs do not suppress a separat
 | `allow_entries`, `allow_management` | Requested permissions in an unapproved proposal; at activation, `true` only when real approval permits entries and normal management. |
 | `close_all_on_loss`, `close_all_on_target` | Proposed whole-account cancellation/closure permissions, including manual exposure; at activation, `true` only when actual approval grants them. |
 | `accept_observed_only` | The proposal discloses active-snapshot-only checks and possible missed peaks/breaches/overshoots. At activation, `true` requires actual acceptance of that disclosed limitation. A draft flag is never acceptance. |
+| `entry_timeframe` | Optional closed-candle timeframe that paces a [loop session](loop.md). Absent means M15; changing it on an active mandate is a reauthorization, not a mid-session switch. |
+| `latch_check_seconds` | Optional latch-only tripwire interval for a loop session; `0` or absent means candle-only cadence. It can trip a stop earlier but never authorizes an entry. |
 
 For a new policy/goal, present a real current `baseline` snapshot and the stored complete proposal before the final approval. `baseline` has the same fields as a snapshot. `approved_at` must be at or after that baseline and not in the future. Do not change the reviewed baseline merely because the user takes time to answer.
 
@@ -151,7 +209,9 @@ Distinct action IDs are never reused, including after rejection. A repeated symb
 
 `ace_state.sqlite3` is the sole local account checkpoint. Its sidecars/backups are private and Git-ignored. Root `risk_management.csv` and `risk_management.csv.*` records are retired and discarded without import: do not create, detect, read, migrate, depend on, or ask about them in future onboarding.
 
-The helper uses `PRAGMA user_version = 1` and three tables: singleton `state` (`id`, `revision`, JSON `payload`), append-only `events` (`id`, `at`, `command`, JSON `detail`, `state_sha256`), and `intents` (`id`, unique `signal_key`, `status`, JSON `payload`, JSON `outcome`). It uses parameterized SQL and `BEGIN IMMEDIATE` for local check/reserve/write serialization. A state/audit digest detects mismatched local edits, not authentic human approval or malicious modification of the whole database.
+The helper uses `PRAGMA user_version = 2` and three tables: singleton `state` (`id`, `revision`, JSON `payload`), append-only `events` (`id`, `at`, `command`, JSON `detail`, `state_sha256`), and `intents` (`id`, unique `signal_key`, `status`, JSON `payload`, JSON `outcome`). It uses parameterized SQL and `BEGIN IMMEDIATE` for local check/reserve/write serialization. A state/audit digest detects mismatched local edits, not authentic human approval or malicious modification of the whole database.
+
+Version 1 checkpoints stay readable and are upgraded in place on the next write; the migration only adds an empty `loop` record and never touches policy/goal anchors, the observed peak, latches, drafts or unresolved intents. Loop sessions are stored inside `state` rather than in extra tables.
 
 State retains account/owner binding; pending drafts; policy/goal IDs and immutable approval/baseline/flow references; the full mandate; observed peak; independent loss/target latch timestamps; last snapshot, calculations and result; and original history boundary/cursor. Events preserve replaced mandates and observations; intents preserve exact action parameters and uncertain outcomes. Never edit SQL/JSON to manufacture approval or clear a latch, reservation or peak.
 
@@ -171,3 +231,24 @@ These are arithmetic fixtures, never settings, approvals or real account facts. 
 | Target `15`, start equity `100`, current equity `115`, remaining close costs `0.5` | Estimated gain `14.5`, not yet reached. At equity `115.5`, trigger cancellation/closure. |
 | Target triggered, later verified flat net gain `14.7` | Remain stopped; report final shortfall `0.3`, not an automatic recovery trade. |
 | Eligible approved signal, fresh verified inputs, affordable proposal and MCP permission | `prepare` records the exact action and permits real MCP dispatch; a later qualifying trade needs no separate account reapproval. |
+
+### Management Scenarios
+
+These are synthetic agent-workflow checks, not real account settings or automated broker tests. The existing Python tests verify the local contract, not independent enforcement of market-management judgments.
+
+| Scenario | Expected Action |
+| --- | --- |
+| Confirmed long higher low permits a higher SL, or short lower high permits a lower SL; all broker constraints pass | Prepare the authorized improvement, preserve TP/protection, verify the accepted stop and resolve; never widen on a later candle. |
+| SL equals entry price but attributable charges remain | Do not call it net breakeven; use verified cost-aware economics, without subtracting booked costs from account equity again. |
+| Candidate SL violates stop/freeze distance or the broker rejects it | Retain/read back existing protection, report the blocker, and do not widen, claim success or fund an add from the proposed change. |
+| Pending setup remains valid despite age or distance from price | Leave it unchanged unless its recorded expiry/other invalidation condition actually applies. |
+| Recorded pending-entry invalidation is confirmed, or its recorded expiry is reached without a new bar | Cancel the Ace entry without inventing a candle, preserve protective orders and verify outcome; a loop-session new entry still needs its own confirmed candle and fresh setup. |
+| Recorded open-position invalidation is confirmed before SL | Close under original management authority, reconcile remaining volume, and do not automatically reverse. |
+| Cancellation times out or races a partial/late fill | Retain uncertainty, reconcile the original intent, resulting position and remainder, and block further additions until settled. |
+| All earlier legs profitable and protected; idea limit `3`, related/all-account existing risk `1`, proposal `1`, safety margin `0.5`, remaining risk `3` | Both `2 <= 3` and `2.5 < 3` pass; a fresh continuation signal and successful `prepare` are still required. |
+| One earlier leg is losing/unprotected, its breakeven move is unverified, or its original evidence is unavailable | No winner addition; aggregate profit or spare account headroom does not override the gate. |
+| Original idea limit `3`, related existing risk already `3` | No positive add fits; a second signal, realized gain or reconnect cannot reset the original allocation. |
+| Positions have breakeven stops, but existing give-back risk `2` + proposal `0.5` + safety margin `0.5` equals remaining risk `3` | Reject the account-wide equality; breakeven risk is not zero. |
+| Netting position mixes Ace and manual exposure or an add would weaken aggregate SL | Skip routine modification/addition; do not invent isolated legs or manual-management authority. |
+| Loss/target latch appears while trailing or an add is being considered | Whole-account cancellation/closure takes priority, including manual exposure; no new entry or automatic target-shortfall recovery. |
+| Helper unavailable during an already-authorized, identity-verified emergency reduction | Do not wait for database repair; use safely targeted documented MCP reduction and reconcile the record when possible. |

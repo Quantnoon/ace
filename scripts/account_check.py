@@ -2,7 +2,7 @@
 
 import argparse
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 import hashlib
 import json
@@ -14,9 +14,14 @@ import uuid
 
 
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "ace_state.sqlite3"
-SCHEMA_VERSION = 1
-COMMANDS = ("draft", "activate", "check", "prepare", "resolve", "status")
+SCHEMA_VERSION = 2
+COMMANDS = ("draft", "activate", "check", "cycle", "prepare", "resolve", "status")
 UNRESOLVED = ("prepared", "unknown")
+PERIODS = {"M1": 1, "M2": 2, "M3": 3, "M4": 4, "M5": 5, "M6": 6, "M10": 10,
+           "M12": 12, "M15": 15, "M20": 20, "M30": 30, "H1": 60, "H2": 120,
+           "H3": 180, "H4": 240, "H6": 360, "H8": 480, "H12": 720,
+           "D1": 1440, "W1": 10080, "MN1": 43200}
+MARKET_STATES = ("open", "closed", "unknown")
 
 
 class CheckError(ValueError):
@@ -59,6 +64,34 @@ def stamp(value, field):
 
 def utc(now):
     return now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def period_minutes(value):
+    name = text(value, "timeframe")
+    if name not in PERIODS:
+        raise CheckError("invalid_timeframe")
+    return PERIODS[name]
+
+
+def next_boundary(now, timeframe, buffer_seconds=5):
+    """Next entry-timeframe candle boundary in UTC, plus a settle buffer."""
+    if type(buffer_seconds) is not int or not 0 <= buffer_seconds <= 60:
+        raise CheckError("invalid_buffer_seconds")
+    base = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    if timeframe == "D1":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    elif timeframe == "W1":
+        monday = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        start = monday + timedelta(days=7)
+    elif timeframe == "MN1":
+        first = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start = (first + timedelta(days=32)).replace(day=1)
+    else:
+        seconds = PERIODS[timeframe] * 60
+        elapsed = (now - base).total_seconds()
+        start = base + timedelta(seconds=(int(elapsed // seconds) + 1) * seconds)
+    return start + timedelta(seconds=buffer_seconds)
 
 
 def encode(value):
@@ -125,6 +158,16 @@ def mandate(value):
         if value.get(permission) is not True:
             raise CheckError("missing_" + permission)
         result[permission] = True
+    # Optional loop timing: absent fields keep an existing approved mandate byte-comparable.
+    if "entry_timeframe" in value:
+        result["entry_timeframe"] = text(value.get("entry_timeframe"), "entry_timeframe")
+        if result["entry_timeframe"] not in PERIODS:
+            raise CheckError("invalid_entry_timeframe")
+    if "latch_check_seconds" in value:
+        latch = value.get("latch_check_seconds")
+        if type(latch) is not int or not 0 <= latch <= 3600:
+            raise CheckError("invalid_latch_check_seconds")
+        result["latch_check_seconds"] = latch
     return result
 
 
@@ -311,6 +354,63 @@ def report(state, metrics=None, errors=(), outstanding=0):
             if stopped else "none"}
 
 
+def loop_cycle(state, request, now, result):
+    """Record one active decision cycle; only a monetary latch closes the session."""
+    timeframe = request["timeframe"] if "timeframe" in request else state["mandate"].get("entry_timeframe", "M15")
+    period_minutes(timeframe)
+    buffer_seconds = request.get("buffer_seconds", 5)
+    next_cycle_at = utc(next_boundary(now, timeframe, buffer_seconds))
+    market_state = request.get("market_state", "open")
+    if market_state not in MARKET_STATES:
+        raise CheckError("invalid_market_state")
+    bar_time, confirmed = None, None
+    bar = request.get("bar")
+    if bar is not None:
+        if not isinstance(bar, dict):
+            raise CheckError("invalid_bar")
+        bar_time = stamp(bar.get("open_time"), "bar_open_time")
+        if bar_time > now:
+            raise CheckError("future_bar")
+        if not isinstance(bar.get("confirmed"), bool):
+            raise CheckError("invalid_bar_confirmed")
+        confirmed = bar["confirmed"]
+    loop = state.get("loop")
+    if not isinstance(loop, dict) or loop.get("status") == "closed":
+        loop = {"id": "loop-" + str(uuid.uuid4()), "started_at": utc(now), "cycles": 0,
+                "gap_seconds": None, "max_gap_seconds": None, "max_gap_at": None,
+                "missing_bars": 0, "end_reason": None, "ended_at": None,
+                "timeframe": timeframe, "bar_open_time": None, "bar_confirmed": None,
+                "bar_advanced": None, "market_state": market_state}
+    previous = stamp(loop["last_cycle_at"], "last_cycle_at") if loop.get("last_cycle_at") else None
+    gap = None if previous is None else max(0.0, (now - previous).total_seconds())
+    loop["gap_seconds"] = gap
+    if gap is not None and (loop.get("max_gap_seconds") is None or gap > loop["max_gap_seconds"]):
+        loop["max_gap_seconds"] = gap
+        loop["max_gap_at"] = utc(now)
+    loop["cycles"] = int(loop.get("cycles", 0)) + 1
+    loop["last_cycle_at"] = utc(now)
+    loop["timeframe"] = timeframe
+    loop["market_state"] = market_state
+    if bar_time is not None:
+        previous_bar = stamp(loop["bar_open_time"], "bar_open_time") if loop.get("bar_open_time") else None
+        advanced = previous_bar is None or bar_time > previous_bar
+        loop["bar_open_time"] = utc(bar_time)
+        loop["bar_confirmed"] = confirmed
+        loop["bar_advanced"] = advanced
+        loop["missing_bars"] = 0 if advanced else int(loop.get("missing_bars", 0)) + 1
+    loop["next_cycle_at"] = next_cycle_at
+    if result["loss_latched_at"] or result["target_latched_at"]:
+        loop["end_reason"] = "loss_latch" if result["loss_latched_at"] else "target_latch"
+        loop["status"] = "closed" if result["closure_verified"] else "closing"
+        if loop["status"] == "closed" and not loop.get("ended_at"):
+            loop["ended_at"] = utc(now)
+    else:
+        loop["status"] = "active"
+        loop["end_reason"] = None
+    state["loop"] = loop
+    return loop
+
+
 def tool_parameters(value):
     """Keep MCP JSON number types; monetary accounting itself stays Decimal."""
     if isinstance(value, dict):
@@ -385,7 +485,8 @@ def action(value, state, metrics, errors):
 
 
 def load_state(connection):
-    if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if version not in (1, SCHEMA_VERSION):
         raise CheckError("unsupported_schema")
     row = connection.execute("SELECT revision, payload FROM state WHERE id = 1").fetchone()
     if row is None:
@@ -399,6 +500,7 @@ def load_state(connection):
     if not isinstance(state, dict) or account(state.get("account")) != state["account"]:
         raise CheckError("invalid_account_state")
     text(state.get("owner_id"), "owner_id")
+    state.setdefault("loop", None)
     return row[0], state
 
 
@@ -408,6 +510,7 @@ def save_state(connection, revision, state, command, detail, now):
                        (revision, serialized))
     connection.execute("INSERT INTO events(at, command, detail, state_sha256) VALUES (?, ?, ?, ?)",
                        (utc(now), command, encode(detail), hashlib.sha256(serialized.encode("utf-8")).hexdigest()))
+    connection.execute("PRAGMA user_version = " + str(SCHEMA_VERSION))
 
 
 def pending(connection):
@@ -619,12 +722,22 @@ def transact(connection, command, request, now):
                     connection.execute("UPDATE intents SET status = ?, outcome = ? WHERE id = ?", (outcome, encode(resolution), intent_id))
                     detail.update(intent_id=intent_id, resolution=resolution)
                     result = report(state, metrics, errors, len(pending(connection)))
+                elif command == "cycle":
+                    if metrics is None:
+                        raise CheckError("fresh_account_snapshot_required")
+                    loop = loop_cycle(state, request, now, result)
+                    result.update(may_continue=loop["status"] == "active", loop=loop)
+                    detail["loop"] = loop
                 elif command != "check":
                     raise CheckError("unknown_command")
             except CheckError as error:
                 # Commit a valid observed breach even when its proposed order is rejected.
                 errors.append(str(error))
                 result = report(state, metrics, errors, len(pending(connection)))
+                if command == "cycle":
+                    result.update(loop=state.get("loop"),
+                                  may_continue=not (state.get("loss_latched_at")
+                                                    or state.get("target_latched_at")))
                 detail["reason_codes"] = errors
     state["last_result"] = {key: value for key, value in result.items() if key not in ("intent", "may_dispatch")}
     save_state(connection, revision + 1, state, command, detail, now)
@@ -674,7 +787,7 @@ def run(command, request=None, db_path=DEFAULT_DB, now=None):
                 connection.execute("CREATE TABLE state(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, payload TEXT NOT NULL)")
                 connection.execute("CREATE TABLE events(id INTEGER PRIMARY KEY, at TEXT NOT NULL, command TEXT NOT NULL, detail TEXT NOT NULL, state_sha256 TEXT NOT NULL)")
                 connection.execute("CREATE TABLE intents(id TEXT PRIMARY KEY, signal_key TEXT UNIQUE, status TEXT NOT NULL CHECK(status IN ('prepared','unknown','completed','not_executed')), payload TEXT NOT NULL, outcome TEXT)")
-                connection.execute("PRAGMA user_version = 1")
+                connection.execute("PRAGMA user_version = " + str(SCHEMA_VERSION))
         with localcontext() as context:
             context.prec = 64
             result = transact(connection, command, request, now)
