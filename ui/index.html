@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Ace | Account Desk</title>
+  <link rel="icon" href="/assets/logo.png" type="image/png">
+  <link rel="stylesheet" href="/dashboard.css">
+  <script type="module" src="/dashboard.mjs"></script>
+</head>
+<body>
+  <a class="skip-link" href="#ace-dashboard">Skip to account overview</a>
+  <header class="site-header">
+    <a class="brand" href="#ace-dashboard" aria-label="Ace account desk">
+      <span class="brand-mark"><img src="/assets/logo.png" alt="" width="600" height="769"></span>
+      <span class="brand-name">ACE<span class="brand-caption">ACCOUNT DESK</span></span>
+    </a>
+    <div class="account-heading" aria-label="Saved account identity">
+      <span class="eyebrow">NAMED ACCOUNT</span>
+      <strong id="account-login" class="numeric">Unavailable</strong>
+      <span id="account-server" class="muted">Account details not yet read</span>
+      <span id="account-type" class="tag">Type unavailable</span>
+      <span id="account-currency" class="tag">Currency unavailable</span>
+    </div>
+    <div class="desk-mode"><span class="mode-mark" aria-hidden="true"></span>READ ONLY<span>Saved observations, not a live feed</span></div>
+  </header>
+
+  <main id="ace-dashboard" class="desk" aria-busy="true" tabindex="-1">
+    <div class="page-heading">
+      <div><p class="eyebrow">ONE ACCOUNT / ONE SHARED TARGET</p><h1>Target, in view.</h1></div>
+      <nav aria-label="Dashboard sections"><a href="#target">Target</a><a href="#activity">Activity</a><a href="#orders">Orders</a></nav>
+    </div>
+
+    <section class="source-strip" aria-label="Observation and interface freshness">
+      <div class="source-observation">
+        <span id="source-badge" class="tag" data-tone="muted">Observation unavailable</span>
+        <span>Source observed <time id="source-time">Unavailable</time></span>
+        <span id="source-age" class="numeric muted">Age unavailable</span>
+        <span id="source-limit" class="muted">Approved age limit unavailable</span>
+      </div>
+      <div class="refresh-info">
+        <span><span id="reader-state">Reading saved data</span><span class="refresh-time">UI last read <time id="ui-time">Unavailable</time></span></span>
+        <button id="refresh-button" class="button button--quiet" type="button">Refresh now</button>
+      </div>
+    </section>
+    <div id="reader-error" class="notice notice--error" role="alert" hidden></div>
+    <div id="source-notice" class="notice" hidden></div>
+    <aside id="warning-panel" class="notice" aria-label="Data availability notices" hidden><ul id="warnings"></ul></aside>
+    <p id="status-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+
+    <section id="empty-state" class="empty-desk" aria-labelledby="empty-title">
+      <span id="empty-kicker" class="eyebrow">LOCAL CHECKPOINT</span>
+      <h2 id="empty-title">Reading saved account observations.</h2>
+      <p id="empty-description">The desk reads the local checkpoint. It does not connect to the broker or run the trading agent.</p>
+      <dl id="draft-amounts" class="draft-amounts" hidden>
+        <div><dt>Unapproved target draft</dt><dd id="draft-target" class="numeric">Unavailable</dd></div>
+        <div><dt>Unapproved budget draft</dt><dd id="draft-budget" class="numeric">Unavailable</dd></div>
+      </dl>
+      <p class="section-note">View only. No setup, approval, order or risk-setting controls are available here.</p>
+    </section>
+
+    <div id="configured-workspace" hidden>
+      <div class="overview-grid">
+        <section id="target" class="target-section" aria-labelledby="target-heading">
+          <div class="section-heading"><h2 id="target-heading"><span class="section-index">01</span> Approved account target</h2><span class="tag">ACCOUNT-WIDE</span></div>
+          <p id="approved-target" class="target-amount numeric">Unavailable</p>
+          <p class="target-description">Additional net equity gain from the approved goal baseline, adjusted for external cash flows and estimated incremental closing costs.</p>
+          <dl class="target-metrics">
+            <div><dt>Estimated net gain</dt><dd id="net-gain" class="numeric">Unavailable</dd><span class="metric-note">Toward this target</span></div>
+            <div><dt>Target progress</dt><dd id="progress-pct" class="numeric">Unavailable</dd><span class="metric-note">~ is truncated; exact value on hover</span></div>
+            <div><dt>Remaining target</dt><dd id="remaining-target" class="numeric">Unavailable</dd><span class="metric-note">Not a promised return</span></div>
+          </dl>
+          <dl class="baseline-metrics">
+            <div><dt>Goal baseline equity</dt><dd id="baseline-equity" class="numeric">Unavailable</dd></div>
+            <div><dt>Incremental close costs</dt><dd id="close-costs" class="numeric">Unavailable</dd></div>
+            <div><dt>Baseline source time</dt><dd><time id="goal-start">Unavailable</time></dd></div>
+            <div><dt>Goal approved at</dt><dd><time id="goal-approved">Unavailable</time></dd></div>
+          </dl>
+          <p id="active-draft-note" class="section-note" hidden>A separate, unapproved draft is recorded. It does not replace this approved goal.</p>
+
+          <section class="progress-section" aria-labelledby="chart-heading">
+            <div class="section-heading"><h3 id="chart-heading">Observed progress</h3><span class="eyebrow">SAMPLED / NOT CONTINUOUS</span></div>
+            <div class="chart-legend"><span><i class="legend-line" aria-hidden="true"></i>Net gain</span><span><i class="legend-line legend-line--target" aria-hidden="true"></i>Approved target</span><span id="chart-scale" class="muted"></span></div>
+            <figure class="progress-figure">
+              <svg id="progress-chart" class="progress-chart" viewBox="0 0 800 240" role="group" aria-labelledby="progress-chart-title progress-chart-description" hidden>
+                <title id="progress-chart-title">Estimated net gain toward the current goal</title>
+                <desc id="progress-chart-description">Recorded observations only. Focus a point for its exact value, or open the exact observations table below. Lines do not represent continuous monitoring.</desc>
+                <g id="chart-drawing"></g>
+              </svg>
+              <p id="chart-empty" class="chart-empty">Progress history unavailable.</p>
+              <div class="chart-range"><time id="chart-from">Unavailable</time><time id="chart-to">Unavailable</time></div>
+              <figcaption id="chart-coverage" class="section-note">No observations are inferred between recorded samples.</figcaption>
+            </figure>
+            <output id="chart-readout" class="chart-readout" aria-live="polite">Focus or point to a sample for exact values.</output>
+            <details id="chart-table-details" class="disclosure">
+              <summary id="chart-table-summary">View exact observations</summary>
+              <div class="table-scroll" tabindex="0" role="region" aria-label="Exact progress observations, horizontally scrollable">
+                <table class="observation-table">
+                  <caption>Exact source values for the displayed current-goal window. Missing values are not zero.</caption>
+                  <thead><tr><th scope="col">Source time (UTC)</th><th scope="col">Net gain</th><th scope="col">Progress</th><th scope="col">Target</th><th scope="col">Observation / notes</th></tr></thead>
+                  <tbody id="chart-table-body"></tbody>
+                </table>
+              </div>
+            </details>
+          </section>
+        </section>
+
+        <aside class="risk-section" aria-labelledby="risk-heading">
+          <div class="section-heading"><h2 id="risk-heading"><span class="section-index">02</span> Risk &amp; state</h2></div>
+          <div class="canonical-outcome">
+            <p class="eyebrow">LATEST HELPER OUTCOME</p><strong id="canonical-state" class="state-label">Unavailable</strong>
+            <p id="canonical-description" class="muted">No recorded outcome available.</p>
+            <p class="section-note">A saved result is not current execution permission.</p>
+            <dl class="compact-metrics"><div><dt>Last verified at</dt><dd><time id="result-time">Unavailable</time></dd></div><div><dt>Required action, recorded</dt><dd id="required-action">Unavailable</dd></div></dl>
+            <ul id="reason-codes" class="reason-codes"></ul>
+          </div>
+          <dl class="risk-metrics">
+            <div class="risk-budget"><dt>Trailing loss budget</dt><dd id="risk-budget" class="numeric">Unavailable</dd></div>
+            <div><dt>Observed drawdown</dt><dd id="drawdown" class="numeric">Unavailable</dd></div>
+            <div><dt>Remaining headroom</dt><dd id="remaining-risk" class="numeric">Unavailable</dd></div>
+            <div><dt>Existing stressed risk</dt><dd id="existing-risk" class="numeric">Unavailable</dd></div>
+            <div><dt>Account stop floor</dt><dd id="stop-floor" class="numeric">Unavailable</dd></div>
+            <div><dt>Account equity</dt><dd id="equity" class="numeric">Unavailable</dd></div>
+            <div><dt>Account balance</dt><dd id="balance" class="numeric">Unavailable</dd></div>
+          </dl>
+          <p class="section-note">The fixed-money budget trails the highest cash-flow-adjusted equity actually observed. All account exposure, including manual trades, counts.</p>
+          <dl class="exposure-counts">
+            <div><dt>Positions</dt><dd id="positions-count" class="numeric">Unavailable</dd></div>
+            <div><dt>Pending orders</dt><dd id="pending-count" class="numeric">Unavailable</dd></div>
+            <div><dt>Entry orders</dt><dd id="entries-count" class="numeric">Unavailable</dd></div>
+            <div><dt>Protective orders</dt><dd id="protective-count" class="numeric">Unavailable</dd></div>
+          </dl>
+          <div class="stop-records" aria-label="Persistent stop records">
+            <div><span class="eyebrow">LOSS STOP</span><p id="loss-stop">Unavailable</p></div>
+            <div><span class="eyebrow">TARGET STOP</span><p id="target-stop">Unavailable</p></div>
+            <strong id="closure-state">Closure verification unavailable</strong>
+          </div>
+          <dl id="closure-results" class="compact-metrics closure-results" hidden>
+            <div><dt>Target trigger gain</dt><dd id="trigger-gain" class="numeric">Unavailable</dd></div>
+            <div><dt>Verified final net</dt><dd id="final-net" class="numeric">Unavailable</dd></div>
+            <div><dt>Final target shortfall</dt><dd id="final-shortfall" class="numeric">Unavailable</dd></div>
+          </dl>
+          <details class="disclosure risk-more">
+            <summary>Policy &amp; loop record</summary>
+            <dl class="compact-metrics">
+              <div><dt>Observed adjusted peak</dt><dd id="observed-peak" class="numeric">Unavailable</dd></div>
+              <div><dt>Free margin</dt><dd id="free-margin" class="numeric">Unavailable</dd></div>
+              <div><dt>Policy started</dt><dd><time id="policy-start">Unavailable</time></dd></div>
+              <div><dt>Financial loop status, recorded</dt><dd id="loop-status">Unavailable</dd></div>
+              <div><dt>Current execution</dt><dd id="loop-execution">Unverified</dd></div>
+              <div><dt>Loop policy ID</dt><dd id="loop-policy" class="numeric">Unavailable</dd></div>
+              <div><dt>Loop goal ID</dt><dd id="loop-goal" class="numeric">Unavailable</dd></div>
+              <div><dt>Loop binding verified from</dt><dd><time id="loop-binding">Unavailable</time></dd></div>
+              <div><dt>Recorded cycles</dt><dd id="loop-cycles" class="numeric">Unavailable</dd></div>
+              <div><dt>Entry timeframe</dt><dd id="loop-timeframe">Unavailable</dd></div>
+              <div><dt>Last recorded cycle</dt><dd><time id="loop-last">Unavailable</time></dd></div>
+              <div><dt>Next candle check, planned</dt><dd><time id="loop-next">Unavailable</time></dd></div>
+              <div><dt>Next account-only check, planned</dt><dd><time id="loop-latch-next">Unavailable</time></dd></div>
+              <div><dt>Next wake, planned</dt><dd><time id="loop-wake">Unavailable</time></dd></div>
+              <div><dt>Recorded wake reason</dt><dd id="loop-wake-reason">Unavailable</dd></div>
+              <div><dt>Wake overdue at API read</dt><dd id="loop-overdue">Unavailable</dd></div>
+              <div><dt>Largest recorded cycle spacing</dt><dd id="loop-gap">Unavailable</dd></div>
+              <div><dt>Account source observed</dt><dd><time id="loop-observation">Unavailable</time></dd></div>
+              <div><dt>Observation received</dt><dd><time id="loop-observation-received">Unavailable</time></dd></div>
+              <div><dt>Source age at API read</dt><dd id="loop-observation-age">Unavailable</dd></div>
+              <div><dt>Latest source-observation gap</dt><dd id="loop-observation-gap">Unavailable</dd></div>
+              <div><dt>Largest source-observation gap</dt><dd id="loop-max-observation-gap">Unavailable</dd></div>
+              <div><dt>Largest gap source time</dt><dd><time id="loop-max-observation-gap-at">Unavailable</time></dd></div>
+              <div><dt>Recorded end reason</dt><dd id="loop-end">Unavailable</dd></div>
+            </dl>
+            <p class="section-note">Cycle spacing is not an account-observation gap. Source gaps compare accepted observation timestamps, not proven outages. Deadlines are recorded plans, not scheduled or executed waits. A loop record, overdue wake, saved report, browser refresh or healthy local viewer does not verify agent execution or an MCP connection. Earlier legacy binding and missing gap history remain unverified.</p>
+          </details>
+        </aside>
+      </div>
+
+      <div class="records-grid">
+        <div class="decisions-column">
+          <section class="decision-section" aria-labelledby="decision-heading">
+            <div class="section-heading"><h2 id="decision-heading"><span class="section-index">03</span> Latest recorded decision</h2></div>
+            <p class="section-note">The agent's explanation, not an authoritative execution receipt.</p>
+            <p id="journal-unavailable" class="inline-empty">No explanation recorded for this goal.</p>
+            <div id="journal-content" hidden>
+              <div class="journal-meta"><span id="journal-activity" class="tag"></span><span>Recorded <time id="journal-time">Unavailable</time></span></div>
+              <h3 id="journal-summary" class="journal-summary"></h3>
+              <p id="journal-reason" class="prose"></p>
+              <div class="next-step"><span class="eyebrow">NEXT RECORDED STEP</span><p id="journal-next" class="prose"></p></div>
+              <details class="disclosure"><summary>Supporting context &amp; source</summary><dl id="journal-details" class="context-fields"></dl></details>
+            </div>
+          </section>
+          <section id="activity" class="activity-section" aria-labelledby="activity-heading">
+            <div class="section-heading"><h2 id="activity-heading">Account activity</h2><span class="eyebrow">NEWEST FIRST</span></div>
+            <p id="activity-note" class="section-note">A bounded window of recorded events, not a continuous execution log.</p>
+            <p id="activity-empty" class="inline-empty">Activity unavailable.</p>
+            <ol id="activity-list" class="timeline-list"></ol>
+            <div class="load-older"><button id="older-button" class="button" type="button" disabled>Load older activity</button><span id="older-state" class="muted" role="status"></span></div>
+          </section>
+        </div>
+
+        <section id="orders" class="orders-section" aria-labelledby="orders-heading">
+          <div class="section-heading"><h2 id="orders-heading"><span class="section-index">04</span> Broker pending orders</h2><span id="orders-total" class="tag">Unavailable</span></div>
+          <div class="orders-toolbar"><p class="section-note">All account orders, including manual orders.</p><label for="order-filter" class="sr-only">Filter broker pending orders</label><select id="order-filter"><option value="all">All account orders</option><option value="entry">Entry orders</option><option value="protective">Protective orders</option></select></div>
+          <div class="order-columns" aria-hidden="true"><span>INSTRUMENT / TICKET</span><span>TYPE / OWNERSHIP</span><span>LOTS LEFT</span><span>STRESSED RISK</span><span></span></div>
+          <p id="orders-empty" class="inline-empty">Pending order list unavailable.</p>
+          <ul id="orders-list" class="order-list"></ul>
+          <p class="section-note order-footnote">Expand an order for entry, stop-limit, SL/TP, timing and protection. Unknown details are unavailable; explicitly unset values say "Not set". Attached SL/TP are not invented as pending rows.</p>
+
+          <section class="intents-section" aria-labelledby="intents-heading">
+            <div class="section-heading"><h3 id="intents-heading">Unresolved requests</h3><span id="intents-count" class="tag">Unavailable</span></div>
+            <p class="section-note">Local action intents, separate from broker pending orders. A settled request does not by itself mean filled or flat.</p>
+            <p id="intents-empty" class="inline-empty">Request list unavailable.</p>
+            <ul id="intents-list" class="intent-list"></ul>
+          </section>
+        </section>
+      </div>
+    </div>
+
+    <footer class="desk-footer">
+      <p><strong>Observation, not automation.</strong> Refreshing this page does not run the agent, check MT5 or enforce monetary limits. Only active agent snapshots observe peaks and breaches; gaps, slippage and closure delays can overshoot.</p>
+      <details class="disclosure"><summary>Read provenance</summary><dl class="provenance"><div><dt>API generated at</dt><dd><time id="api-time">Unavailable</time></dd></div><div><dt>Saved revision</dt><dd id="saved-revision" class="numeric">Unavailable</dd></div><div><dt>Policy ID</dt><dd id="policy-id" class="numeric">Unavailable</dd></div><div><dt>Goal ID</dt><dd id="goal-id" class="numeric">Unavailable</dd></div><div><dt>Snapshot ID</dt><dd id="snapshot-id" class="numeric">Unavailable</dd></div></dl></details>
+    </footer>
+  </main>
+  <noscript><p class="notice notice--error">JavaScript is required to read the local dashboard API. No trading or background monitoring is performed by this page.</p></noscript>
+</body>
+</html>
