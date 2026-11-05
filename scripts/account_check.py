@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import uuid
@@ -15,8 +16,21 @@ import uuid
 
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "ace_state.sqlite3"
 SCHEMA_VERSION = 2
-COMMANDS = ("draft", "activate", "check", "cycle", "prepare", "resolve", "status")
+COMMANDS = ("draft", "activate", "check", "cycle", "prepare", "resolve", "journal", "status")
 UNRESOLVED = ("prepared", "unknown")
+DISPLAY_VERSION = 1
+METRIC_FIELDS = (
+    "budget", "target", "balance", "equity", "peak", "drawdown", "remaining_risk",
+    "adjusted_stop_floor", "account_stop_floor", "policy_cashflows", "goal_cashflows",
+    "estimated_goal_gain", "progress_pct", "remaining_target", "remaining_close_costs",
+    "existing_risk", "free_margin", "final_net", "final_shortfall",
+)
+JOURNAL_ACTIVITIES = ("analysis", "wait", "entry", "management", "exit", "blocked")
+JOURNAL_TEXT = {"summary": 240, "reason": 2000, "next_step": 500,
+                "market_summary": 2000, "risk_summary": 1000, "invalidation": 1000}
+ORDER_NUMBERS = ("volume_initial", "volume_remaining", "entry_price", "stop_limit_price",
+                 "stop_loss", "take_profit")
+ORDER_UNSET = ("stop_limit_price", "stop_loss", "take_profit", "expires_at")
 PERIODS = {"M1": 1, "M2": 2, "M3": 3, "M4": 4, "M5": 5, "M6": 6, "M10": 10,
            "M12": 12, "M15": 15, "M20": 20, "M30": 30, "H1": 60, "H2": 120,
            "H3": 180, "H4": 240, "H6": 360, "H8": 480, "H12": 720,
@@ -484,6 +498,130 @@ def action(value, state, metrics, errors):
     return result
 
 
+def display_text(value, field, limit=200):
+    value = text(value, field)
+    if len(value) > limit or any((ord(char) < 32 and char not in "\n\t") or ord(char) == 127 for char in value):
+        raise CheckError("invalid_" + field)
+    return value
+
+
+def display_reference(value, field):
+    value = display_text(value, field)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:#@-]*", value):
+        raise CheckError("invalid_" + field)
+    return value
+
+
+def journal_entry(request, state, now):
+    """Validate presentation metadata without observing or changing financial state."""
+    allowed = set(JOURNAL_TEXT) | {"owner_id", "expected_revision", "snapshot_id", "as_of",
+                                  "activity", "symbols", "source_refs", "intent_id", "pending_order_details"}
+    if set(request) - allowed or len(encode(request).encode("utf-8")) > 131072:
+        raise CheckError("invalid_journal_fields_or_size")
+    current = state.get("last_snapshot")
+    if (not current or request.get("snapshot_id") != current["id"]
+            or request.get("as_of") != current["as_of"]):
+        raise CheckError("journal_snapshot_mismatch")
+    if request.get("activity") not in JOURNAL_ACTIVITIES:
+        raise CheckError("invalid_journal_activity")
+    result = {"version": DISPLAY_VERSION, "account": state["account"],
+              "policy_id": state["policy"]["id"], "goal_id": state["goal"]["id"],
+              "snapshot_id": current["id"], "as_of": current["as_of"], "recorded_at": utc(now),
+              "activity": request["activity"], "intent_id": None}
+    for field, limit in JOURNAL_TEXT.items():
+        value = request.get(field)
+        if field in ("summary", "reason", "next_step") or value is not None:
+            result[field] = display_text(value, "journal_" + field, limit)
+    for field in ("symbols", "source_refs"):
+        values = request.get(field, [])
+        if not isinstance(values, list) or len(values) > 64:
+            raise CheckError("invalid_journal_" + field)
+        normalize = display_reference if field == "source_refs" else display_text
+        result[field] = [normalize(value, "journal_" + field) for value in values]
+        if len(set(result[field])) != len(values):
+            raise CheckError("duplicate_journal_" + field)
+    if request.get("intent_id") is not None:
+        result["intent_id"] = display_text(request["intent_id"], "journal_intent_id")
+
+    details = request.get("pending_order_details", [])
+    if not isinstance(details, list):
+        raise CheckError("invalid_pending_order_details")
+    orders = current.get("pending_orders")
+    known = {}
+    if details:
+        if not isinstance(orders, list):
+            raise CheckError("journal_orders_unavailable")
+        for item in orders:
+            if not isinstance(item, dict):
+                raise CheckError("journal_orders_unavailable")
+            ticket = text(item.get("ticket"), "ticket")
+            if ticket in known:
+                raise CheckError("duplicate_journal_order")
+            known[ticket] = item
+    result["pending_order_details"] = []
+    seen = set()
+    allowed_order = set(ORDER_NUMBERS) | {"ticket", "order_type", "side", "volume_unit", "placed_at",
+                                         "expires_at", "ownership", "ownership_ref", "unset_fields"}
+    for item in details:
+        if not isinstance(item, dict) or set(item) - allowed_order:
+            raise CheckError("invalid_order_display_fields")
+        ticket = display_text(item.get("ticket"), "ticket")
+        if ticket in seen or ticket not in known:
+            raise CheckError("journal_order_mismatch")
+        seen.add(ticket)
+        normalized = {"ticket": ticket, "volume_unit": "lots", "ownership": item.get("ownership", "unknown")}
+        if item.get("volume_unit", "lots") != "lots":
+            raise CheckError("invalid_order_volume_unit")
+        if normalized["ownership"] not in ("ace", "manual", "mixed", "unknown"):
+            raise CheckError("invalid_order_ownership")
+        if normalized["ownership"] != "unknown":
+            normalized["ownership_ref"] = display_reference(item.get("ownership_ref"), "ownership_ref")
+        if item.get("order_type") is not None:
+            normalized["order_type"] = display_text(item["order_type"], "order_type", 64)
+        if item.get("side") is not None:
+            if item["side"] not in ("buy", "sell"):
+                raise CheckError("invalid_order_side")
+            normalized["side"] = item["side"]
+        for field in ORDER_NUMBERS:
+            value = item.get(field)
+            if value is not None:
+                if not isinstance(value, str):
+                    raise CheckError("invalid_order_" + field)
+                value = format(money(value, "order_" + field, nonnegative=field.startswith("volume_")), "f")
+            normalized[field] = value
+        if (normalized["volume_initial"] is not None and normalized["volume_remaining"] is not None
+                and Decimal(normalized["volume_remaining"]) > Decimal(normalized["volume_initial"])):
+            raise CheckError("invalid_order_remaining_volume")
+        for field in ("placed_at", "expires_at"):
+            value = item.get(field)
+            if value is not None:
+                parsed = stamp(value, "order_" + field)
+                if field == "placed_at" and parsed > stamp(current["as_of"], "as_of"):
+                    raise CheckError("future_order_placement")
+            normalized[field] = value
+        unset = item.get("unset_fields", [])
+        if (not isinstance(unset, list) or any(not isinstance(field, str) or field not in ORDER_UNSET for field in unset)
+                or len(set(unset)) != len(unset) or any(normalized.get(field) is not None for field in unset)):
+            raise CheckError("invalid_order_unset_fields")
+        normalized["unset_fields"] = unset
+        result["pending_order_details"].append(normalized)
+    return result
+
+
+def display_event(state, result, detail, now):
+    current = state.get("last_snapshot") if result.get("metrics") is not None else None
+    return {"version": DISPLAY_VERSION, "account": state["account"],
+            "policy_id": state["policy"]["id"] if state.get("policy") else None,
+            "goal_id": state["goal"]["id"] if state.get("goal") else None,
+            "recorded_at": utc(now), "snapshot_id": current["id"] if current else None,
+            "as_of": current["as_of"] if current else None,
+            "metrics": {field: result["metrics"].get(field) for field in METRIC_FIELDS} if current else None,
+            "decision": result["decision"], "reason_codes": result.get("reason_codes", []),
+            "loss_latched_at": state.get("loss_latched_at"), "target_latched_at": state.get("target_latched_at"),
+            "closure_verified": result.get("closure_verified", False),
+            "required_action": result.get("required_action", "none"), "intent_id": detail.get("intent_id")}
+
+
 def load_state(connection):
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     if version not in (1, SCHEMA_VERSION):
@@ -620,6 +758,19 @@ def transact(connection, command, request, now):
     owner = text(request.get("owner_id"), "owner_id")
     if state and owner != state["owner_id"] and command != "activate":
         raise CheckError("owner_mismatch")
+    if command == "journal":
+        if not state or not state.get("policy") or not state.get("goal"):
+            raise CheckError("setup_incomplete")
+        entry = journal_entry(request, state, now)
+        if entry["intent_id"] is not None:
+            row = connection.execute("SELECT payload FROM intents WHERE id = ?", (entry["intent_id"],)).fetchone()
+            intent = decode(row[0], exact_numbers=False) if row else {}
+            if any(intent.get(key) != entry[key] for key in ("account", "policy_id", "goal_id")):
+                raise CheckError("journal_intent_mismatch")
+        state["last_journal"] = entry
+        save_state(connection, revision + 1, state, command, {"journal": entry}, now)
+        return {"ok": True, "decision": "journal_saved", "may_dispatch": False, "revision": revision + 1,
+                "policy_id": entry["policy_id"], "goal_id": entry["goal_id"]}
     if command == "draft":
         identity = account(request.get("account"))
         source_ref = text(request.get("source_ref"), "source_ref")
@@ -740,6 +891,7 @@ def transact(connection, command, request, now):
                                                     or state.get("target_latched_at")))
                 detail["reason_codes"] = errors
     state["last_result"] = {key: value for key, value in result.items() if key not in ("intent", "may_dispatch")}
+    detail["display"] = display_event(state, result, detail, now)
     save_state(connection, revision + 1, state, command, detail, now)
     result.update(revision=revision + 1, policy_id=state["policy"]["id"] if state["policy"] else None,
                   goal_id=state["goal"]["id"] if state["goal"] else None)

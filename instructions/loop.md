@@ -18,7 +18,9 @@ A loop session is a run of consecutive active decision cycles recorded by the he
 - **Closed** only after a monetary latch has been enforced and verified flat.
 
 Never describe a session as running, monitoring, or protected between turns. `status`
-reports the last actually recorded cycle and its original timestamp.
+reports the last actually recorded cycle and its original timestamp. The separate
+[read-only dashboard](../README.md#local-dashboard) also shows saved records: a stored
+`loop.status: "active"` or a browser refresh is not proof of a running agent or connected MCP.
 
 ## Cadence: Entry-Timeframe Candles
 
@@ -67,12 +69,18 @@ invent its own cadence.
    independent setups and protect-first winner additions only under the canonical management
    rules and a new successful `prepare`. An order's cancellation, a breakeven stop or spare
    headroom is not itself a new signal; a missing bar or latch-only read does not permit entry.
-6. Keep per-cycle output small: cycle number, decision, equity, drawdown, remaining risk,
+6. After the actual cycle and any management/readback/`resolve` work, record a concise
+   decision/outcome/no-trade explanation with [`journal`](risk-management.md#journal-reports),
+   matching the final latest accepted snapshot. Use its returned revision next; it does not
+   increment the cycle count, change the next boundary or refresh the observation. Do not
+   repeat `cycle` just to log, insert reporting between preparation and dispatch, or delay
+   emergency protection for a report. Summarize conclusions, not private chain-of-thought.
+7. Keep per-cycle output small: cycle number, decision, equity, drawdown, remaining risk,
    latch state, actual management results/blockers under [Outcome / Next](goals.md#compact-trading-report),
    and the next boundary. Full snapshots belong in SQLite, not in the conversation. Read the
    bars needed for existing position/order management and nearby prospective triggers, not
    the whole symbol universe every cycle; entry proximity must never exclude required management.
-7. Never raise risk to manufacture activity. A quiet cycle is a valid result.
+8. Never raise risk to manufacture activity. A quiet cycle is a valid result.
 
 ## MCP Failure
 
@@ -81,7 +89,8 @@ invent its own cadence.
 - A failed read is not a cycle: it must not advance the revision, the cycle count, the peak
   or a latch.
 - Never re-submit a previous observation as if it were new. Fabricating freshness would
-  corrupt the trailing budget and the target baseline.
+  corrupt the trailing budget and the target baseline. Do not write `journal` entries as
+  outage heartbeats or to fabricate activity while turns are not executing.
 - Dispatch nothing while unverified, and queue nothing to fire on reconnect.
 - Record the outage as a gap with its start time and duration.
 - The first action after recovery is a fresh snapshot, then `cycle`: a trigger may have fired
@@ -124,4 +133,7 @@ Loop: <session id short / status active·interrupted·closing·closed / cycles /
 ```
 
 State the observation gap explicitly. A long gap means the budget and target were unwatched,
-and the broker stops were the only protection during it.
+and the broker stops were the only protection during it. Follow the
+[dashboard reporting workflow](goals.md#dashboard-reporting) for saved explanations after
+real work. Source timestamps and gaps remain unchanged by display refresh; reporting failure
+does not require new account approval or delay previously authorized emergency reductions.

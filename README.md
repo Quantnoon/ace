@@ -4,7 +4,7 @@
 
 # Ace
 
-Client-neutral instructions for an AI agent that analyses markets and trades a MetaTrader 5 (MT5) account through an MT5 Model Context Protocol (MCP) server, with a small Python/SQLite account checker. You supply a monetary trailing-loss budget and a profit target; the agent reads the market itself and decides which orders to place. The mandate covers the whole named account, including manual exposure.
+Client-neutral instructions for an AI agent that analyses markets and trades a MetaTrader 5 (MT5) account through an MT5 Model Context Protocol (MCP) server, with a small Python/SQLite account checker and a separate read-only local dashboard. You supply a monetary trailing-loss budget and a profit target; the agent reads the market itself and decides which orders to place. The mandate covers the whole named account, including manual exposure.
 
 Version: **[1.5.0](VERSION)** | [Changelog](CHANGELOG.md)
 
@@ -51,11 +51,30 @@ The agent obtains actual MT5 account/exposure/history data and passes verified s
 | `prepare` | Recheck fresh inputs and durably record the exact intended MCP action before dispatch, reserving risk locally when applicable. |
 | `resolve` | Reconcile verified broker outcomes, retaining uncertainty instead of assuming a timeout means failure. |
 | `cycle` | Record one loop-session cycle and the next entry-timeframe candle boundary; ends a session only on a monetary latch. |
+| `journal` | Save a concise explanation against the latest accepted snapshot, without another risk check, cycle or dispatch permission. |
 | `status` | Read saved state with its original timestamps, not current MT5 verification. |
 
 Each active decision cycle includes a current snapshot and `check` (`cycle` instead during a loop), even without an entry signal. Monetary latches and required management of existing positions/pending entries take priority over additions. An eligible action uses fresh `prepare` -> the actual MCP call -> verified fill/stop/volume or cancellation/closure readback -> `resolve`. Local transactions and one local writer prevent conflicting reservations in this database, not manual trading, copied-repository conflicts, account switches, or the check-to-dispatch race. SQLite is not atomic broker gating or an independent continuous guard.
 
+After that actual work, the agent records concise decision/outcome/no-trade explanations using the [journal contract](instructions/risk-management.md#journal-reports) and [reporting workflow](instructions/goals.md#dashboard-reporting). These are source-grounded summaries, not private chain-of-thought or new execution evidence. Reporting never goes between preparation and dispatch, repeats a check just to log, or delays authorized emergency reductions. A reporting failure is not a new account-approval requirement.
+
 The SQLite file is the sole local account checkpoint and must stay private. A missing database is unconfigured, never an approved reset. Root `risk_management.csv` and `risk_management.csv.*` account backups are retired and discarded without import; do not recreate, detect, read, migrate, depend on, or ask about them during onboarding, or copy old approvals/peaks into fresh state.
+
+## Local Dashboard
+
+From the repository root, run:
+
+```text
+python scripts/dashboard.py
+```
+
+Open `http://127.0.0.1:8765`. Python 3.10+ and its standard library are sufficient; there are no external Python packages, frontend dependencies or build steps. Optional CLI flags are `--port <port>` and `--db <path>`; the default database is repository-root `ace_state.sqlite3`. The browser cannot choose a database path. An alternate path is for a fixture or an explicitly managed checkpoint, not a second trading ledger.
+
+The separate loopback HTTP server serves static UI files and read-only GET routes, opening SQLite with `mode=ro`. It cannot trade, change settings, approve or activate state, start the agent, or refresh MCP. Starting or viewing it does not begin onboarding or grant trading authority; it needs no client-specific configuration.
+
+The view shows the current approved target and estimated net progress, a sampled current-goal chart, account-wide risk/stop state, recorded activity and explanations, and actual pending orders including manual entries and protective orders. Local prepared/unknown intentions are not broker pending orders; a settled request does not necessarily mean a fill or a flat account. Missing order details and explanations remain unavailable.
+
+Page refresh rereads saved records, not a continuous broker feed. Freshness follows the snapshot's source `as_of` and the approved maximum age, never the page refresh, journal time or a recorded active loop. Missing state is unconfigured without file creation; draft-only amounts are unapproved and cannot replace an existing approved target. Stale or failed reads retain at most clearly labeled last-known data with original timestamps, not invented zeros or a silent repair. Sampled history begins with actual recorded observations; an older checkpoint has at most one timestamped cached point, not backfilled performance. Neither the chart nor the dashboard promises returns or continuous protection.
 
 ## Loop Sessions
 

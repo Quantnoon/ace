@@ -64,7 +64,7 @@ No process is installed to run checks or close positions while the AI is inactiv
 
 ## Compact Trading Report
 
-Every trading response, including onboarding questions, errors, blocked decisions and liquidation updates, includes this compact report with actual values or `unavailable`:
+Every trading response, including onboarding questions, errors, blocked decisions and liquidation updates, includes this compact report with actual values or `unavailable`. Give concise evidence-based explanations of decisions and outcomes, not private chain-of-thought:
 
 ```text
 Account / As Of: <login + server; demo/live; currency; connection; verified source times>
@@ -83,6 +83,21 @@ For management, keep `Outcome / Next` concise but distinguish proposed, broker-v
 Do not substitute the report-generation time for stale source timestamps, invent zero balances or assume a missing database is approved. Label the last actual snapshot/check; do not imply continuing monitoring, execution or reporting while inactive.
 
 At the final-approval stage, supplement the compact report with the approved broker symbol universe and the specific market reads that justify the planned orders: timeframes and source timestamps, direction or range, volatility, spread relative to planned stops, session, invalidation levels, instrument economics, costs and margin, planned order count, and the total stressed risk against the remaining budget. Include the original management conditions for those ideas: breakeven/trailing method, invalidation/expiry exits, whether winner additions are eligible and their fixed original idea allocation. One full question may authorize the named-account mandate only when it explicitly requests both that account and those limits; later eligible actions within it need no separate per-trade confirmation.
+
+## Dashboard Reporting
+
+The [local dashboard](../README.md#local-dashboard) displays saved observations and explanations, not a new broker feed. Keep it useful through the existing agent workflow, without changing any approval or risk requirement:
+
+1. Perform the actual mandatory `check` or loop `cycle`, handle latches/emergencies first, then complete applicable management, MCP readback and `resolve` work. A no-trade decision is a real outcome; do not repeat an observation command just to produce a report.
+2. With an existing activated policy/goal, use the [exact `journal` contract](risk-management.md#journal-reports) against the final latest accepted `snapshot_id` and `as_of`. Record the activity, a short summary, the factual reason and next permitted step. Add concise market/risk/invalidation context, relevant symbols and nonsecret source/intent references when available. Explain why an order was left unchanged or no entry qualified, not merely that a cycle happened.
+3. Supply pending-order details only for exact tickets in that same snapshot and only from actual evidence. Distinguish known, unknown and explicitly unset values; do not infer Ace ownership or replace canonical protection/risk with display labels. Include manual/protective pending orders, not local intentions or invented native SL/TP rows.
+4. Consume the journal's returned revision before the next mutation. Never insert reporting between `prepare` and dispatch or ahead of emergency reductions, fabricate activity while inactive, or use it as an MCP-outage heartbeat. Reassess rejected notes after a state/source/goal change rather than blindly rebinding them. If reporting fails, state that explanations are unavailable; it is not another approval requirement or grounds to delay authorized protection. Factual helper and intent outcomes remain visible.
+
+The target overview uses the existing approved goal and helper metrics (`estimated_goal_gain`, signed `progress_pct`, `remaining_target`, `remaining_close_costs`), not pending drafts, deposits as profit or balance divided by target. Show the approved baseline/time and both latches. Preserve loss priority and distinguish a target trigger, closure pending, verified `final_net` and `final_shortfall`; lower final profit never releases a stop.
+
+Freshness comes from source `as_of` and the approved `max_snapshot_age_seconds`, not journal time, browser refresh or `last_cycle_at`. A stored active loop is not proof the agent is executing or MCP is connected. Future source times are errors. Show a failed latest observation separately from last-good metrics; missing/stale values are unavailable or explicitly last-known with original timestamps, never zero. Missing state is unconfigured without setup; draft-only state is unapproved. Corrupt, unsupported, busy or missing-after-load state is a read failure, never silent repair or approval.
+
+The chart contains sampled accepted observations for the current goal, with gaps and available coverage visible, not interpolated returns or a continuous guard. Older state has at most one timestamped cached point; missing history and explanation text stay unavailable without backfill. Label prose as the agent's latest recorded explanation, never proof of execution, ownership or authority. Prepared/unknown intents stay separate from canonical pending orders; settled requests can still be pending orders or terminal partial fills rather than filled trades or a flat account.
 
 ## Synthetic Workflow Checks
 

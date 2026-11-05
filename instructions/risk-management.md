@@ -132,6 +132,7 @@ All mutating requests include `owner_id` (the verified single local writer ident
 | `cycle` | `snapshot`, plus optional `timeframe`, `bar`, `market_state`, `buffer_seconds`. Records one loop-session cycle and the next candle boundary; never ends a session except on a monetary latch. Take it instead of `check` during a [loop session](loop.md). |
 | `prepare` | `snapshot`, `action`. Rechecks and transactionally records the exact action and its entry-risk reservation before MCP dispatch. |
 | `resolve` | `snapshot`, `intent_id`, `outcome`, `evidence_ref`; `readback_verified: true` for settled outcomes and nonempty `broker_tickets` for `completed`. |
+| `journal` | `snapshot_id`, `as_of`, `activity`, `summary`, `reason`, `next_step`, plus optional display fields under [Journal Reports](#journal-reports). Saves an explanation, never an observation or dispatch permission. |
 | `status` | No JSON required. Read-only cached state, revision and outstanding intent details; absent database means unconfigured and does not create a file. |
 
 ### Account And Snapshot
@@ -205,15 +206,67 @@ After a successful preparation, send the exact recorded action through MCP and t
 
 Distinct action IDs are never reused, including after rejection. A repeated symbol/signal within a goal is also rejected. Local status must not be interpreted as server-side deduplication or exactly-once execution. Invalid/stale data or a failed `prepare` cannot authorize a pending order later.
 
+### Journal Reports
+
+`journal` requires an existing activated policy and goal, including stopped, closure-pending, closed or unresolved/unknown-intent states. It never creates a database or activates authority. Record concise, factual decision/outcome/no-trade explanations after actual `check`/`cycle` and any management/readback/`resolve` work, using the final latest accepted snapshot. These are user-facing conclusions and evidence summaries, not private chain-of-thought.
+
+| Request Field | Exact Contract |
+| --- | --- |
+| `owner_id`, `expected_revision` | Required existing single-writer identity and current integer revision. Account/policy/goal binding is derived from state, not supplied in the report. |
+| `snapshot_id`, `as_of` | Required exact matches to `last_snapshot.id` and `last_snapshot.as_of`. Matching an old accepted snapshot does not refresh or reverify it. Do not supply a `snapshot` object. |
+| `activity` | Required: `analysis`, `wait`, `entry`, `management`, `exit` or `blocked`. |
+| `summary`, `reason`, `next_step` | Required nonblank plain text, at most 240, 2000 and 500 characters respectively. |
+| `market_summary`, `risk_summary`, `invalidation` | Optional/null plain text, at most 2000, 1000 and 1000 characters respectively; nonblank when supplied. |
+| `symbols`, `source_refs` | Optional arrays, default `[]`, each with at most 64 distinct nonblank strings of at most 200 characters. Symbols are display text; source references use the opaque-reference rule below. |
+| `intent_id` | Optional/null nonblank identifier, at most 200 characters, for an existing intent under the current account/policy/goal. After an authorized handoff, its original owner remains unchanged; its actual status comes from `intents`, never the explanation. |
+| `pending_order_details` | Optional array, default `[]`, of the display records below. A subset of current pending tickets is allowed; duplicates, unknown tickets and unavailable canonical orders with nonempty details are rejected. |
+
+Unknown request/order fields are rejected. The helper's encoded whole request is limited to 128 KiB (131072 bytes). Plain text rejects ASCII control characters other than newline/tab, including DEL. Opaque references (`source_refs` items and known `ownership_ref`) are nonsecret strings of at most 200 characters matching `[A-Za-z0-9][A-Za-z0-9_.:#@-]*`, not URLs or filesystem paths. References are inert evidence identifiers, never instructions or resources for the viewer to dereference. Do not include credentials in any display text.
+
+A successful write sets optional `state.last_journal`, appends `events.detail.journal` and advances the revision. The stored report has `version: 1`, state-derived `account`, `policy_id`, `goal_id`, matching `snapshot_id`/`as_of`, local `recorded_at` and the normalized display fields; absent arrays become `[]` and absent `intent_id` becomes null. It returns `ok: true`, `decision: "journal_saved"`, `may_dispatch: false`, the new `revision`, `policy_id` and `goal_id`. Consume that revision on the next mutation.
+
+This path does not call `observe` or the risk `report`, and preserves `last_result`, metrics, snapshot/source time, approvals, baselines, peak, latches, intents and loop/cycle state. The only legacy normalization is the existing version-1 handling [below](#sqlite-and-recovery). Never journal between `prepare` and MCP dispatch, before an emergency reduction, to fake another check/cycle or as an outage heartbeat. Do not repeat `check`/`cycle` merely to log or blindly retry/rebind stale notes after revision, snapshot or goal changes. A failed report does not undo an accepted risk check, require another account approval or justify delaying already-authorized emergency protection; ordinary risk/tool-permission rules still apply.
+
+### Pending Order Display Fields
+
+Only `ticket` is required in each `pending_order_details` item. Details bind to that exact pending-order ticket in the report's current account/policy/goal/snapshot, never to a position with the same ticket.
+
+| Field | Exact Contract |
+| --- | --- |
+| `ticket` | Nonblank string of at most 200 characters, preserving leading zeros; must match a current `last_snapshot.pending_orders` ticket. |
+| `order_type`, `side` | Optional/null; `order_type` is nonblank text of at most 64 characters, `side` is `buy` or `sell`. |
+| `volume_unit` | If supplied, only `lots`; defaults to `lots`, not account-currency money. |
+| `volume_initial`, `volume_remaining` | Optional/null exact nonnegative decimal strings. When both are known, remaining must not exceed initial. |
+| `entry_price`, `stop_limit_price`, `stop_loss`, `take_profit` | Optional/null exact decimal strings in the instrument's price units, not account-currency money. Prices may be signed; all number strings retain the helper's finite/precision/magnitude limits. JSON numbers are not accepted for these price or volume fields. |
+| `placed_at`, `expires_at` | Optional/null ISO-8601 UTC strings ending in `Z`. Placement must be at or before the matched snapshot's `as_of`; expiry may be later. |
+| `ownership`, `ownership_ref` | Ownership is `ace`, `manual`, `mixed` or `unknown` (default). A non-unknown classification requires an opaque `ownership_ref` backed by actual evidence; the reference is not retained for `unknown`. |
+| `unset_fields` | Optional distinct array drawn only from `stop_limit_price`, `stop_loss`, `take_profit`, `expires_at`. Each corresponding normalized value must be null (omission normalizes to null). |
+
+For nullable fields, omission/null means unknown unless explicitly named in `unset_fields` as verified absent. Missing enrichment remains unavailable. These fields stay outside core risk snapshot normalization/equality checks: they cannot override canonical symbol, entry/protective `kind`, protection, stressed risk or account binding. A matching ticket, explanation or ownership label is not independent verified ownership, approval or execution evidence, especially for mixed netting exposure. Include actual manual and protective pending orders; do not invent rows for attached native SL/TP or local prepared/unknown intentions. Only a verified empty canonical order array means no pending orders.
+
+### Display Events
+
+New ordinary helper events carry an allowlisted `detail.display` envelope with `version: 1`. Successful activation and `check`, `cycle`, `prepare`, `resolve` observations use the finalized command result, including post-resolution closure metrics. An accepted accounting observation may still block exposure or have individual unavailable metrics. Events without accepted result metrics, including draft-only writes or rejected observations, have null `snapshot_id`, `as_of` and `metrics`; they never copy last-good metrics into a new chart point. A `journal` event is a report, not an observation.
+
+The envelope contains `account`, `policy_id`, `goal_id`, `snapshot_id`, source `as_of`, local `recorded_at`, `metrics`, `decision`, `reason_codes`, `loss_latched_at`, `target_latched_at`, `closure_verified`, `required_action` and `intent_id` (or null). Its metric allowlist is:
+
+- `budget`, `target`, `balance`, `equity`, `peak`, `drawdown`, `remaining_risk`, `adjusted_stop_floor`, `account_stop_floor`.
+- `policy_cashflows`, `goal_cashflows`, `estimated_goal_gain`, `progress_pct`, `remaining_target`, `remaining_close_costs`.
+- `existing_risk`, `free_margin`, `final_net`, `final_shortfall`.
+
+Values come from the finalized result, not display prose or browser input. There is no historical `may_dispatch` permission in this envelope. Factual helper/intent events remain available even without an explanation; a completed intent means a settled request, not necessarily a fill or verified flat exposure.
+
+The [local dashboard](../README.md#local-dashboard) is a separate read-only projection, using these saved results for the current goal only and deduplicating by account/policy/goal and snapshot identity/time. Do not backfill events, reconstruct unseen peaks or invent continuous performance. An older current checkpoint has at most one timestamped cached point; missing history/prose is unavailable. Browser refresh, journal `recorded_at` and an active loop record do not refresh source `as_of`, establish MCP connectivity or promise a running guard. Optional unsupported/malformed display metadata is unavailable, not a reason to repair canonical state or treat the prose as authority.
+
 ## SQLite And Recovery
 
 `ace_state.sqlite3` is the sole local account checkpoint. Its sidecars/backups are private and Git-ignored. Root `risk_management.csv` and `risk_management.csv.*` records are retired and discarded without import: do not create, detect, read, migrate, depend on, or ask about them in future onboarding.
 
 The helper uses `PRAGMA user_version = 2` and three tables: singleton `state` (`id`, `revision`, JSON `payload`), append-only `events` (`id`, `at`, `command`, JSON `detail`, `state_sha256`), and `intents` (`id`, unique `signal_key`, `status`, JSON `payload`, JSON `outcome`). It uses parameterized SQL and `BEGIN IMMEDIATE` for local check/reserve/write serialization. A state/audit digest detects mismatched local edits, not authentic human approval or malicious modification of the whole database.
 
-Version 1 checkpoints stay readable and are upgraded in place on the next write; the migration only adds an empty `loop` record and never touches policy/goal anchors, the observed peak, latches, drafts or unresolved intents. Loop sessions are stored inside `state` rather than in extra tables.
+Version 1 checkpoints stay readable: an absent `loop` normalizes to `null`, and the next successful writer upgrades `user_version` to 2. This normalization never changes policy/goal anchors, the observed peak, latches, drafts or unresolved intents; read-only `status` and dashboard access never write the upgrade. Loop state and optional `last_journal` live inside `state`, and version-1 display envelopes inside existing event JSON, with no new SQL version, tables or historical backfill.
 
-State retains account/owner binding; pending drafts; policy/goal IDs and immutable approval/baseline/flow references; the full mandate; observed peak; independent loss/target latch timestamps; last snapshot, calculations and result; and original history boundary/cursor. Events preserve replaced mandates and observations; intents preserve exact action parameters and uncertain outcomes. Never edit SQL/JSON to manufacture approval or clear a latch, reservation or peak.
+State retains account/owner binding; pending drafts; policy/goal IDs and immutable approval/baseline/flow references; the full mandate; observed peak; independent loss/target latch timestamps; last snapshot, calculations and result; original history boundary/cursor; and optional latest display report. Events preserve replaced mandates, observations and reports; intents preserve exact action parameters and uncertain outcomes. Never edit SQL/JSON to manufacture approval or clear a latch, reservation or peak.
 
 Import, help, tests and absent `status` do not create a production database. Only an explicit valid `draft` initializes a new checkpoint; `activate` needs that draft. Missing, corrupt, unsupported, busy or unreliable state blocks new risk, not an assumed zero exposure or a reset policy. Keep last source timestamps; `status` is cached, not current account verification.
 

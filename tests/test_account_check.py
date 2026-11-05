@@ -453,6 +453,10 @@ class AccountCheckTests(unittest.TestCase):
         self.assertTrue(final["closure_verified"])
         self.assertEqual(final["metrics"]["final_net"], "14.7")
         self.assertEqual(final["metrics"]["final_shortfall"], "0.3")
+        with closing(sqlite3.connect(self.db)) as connection:
+            display = json.loads(connection.execute("SELECT detail FROM events ORDER BY id DESC LIMIT 1").fetchone()[0])["display"]
+        self.assertTrue(display["closure_verified"])
+        self.assertEqual(display["metrics"]["final_net"], "14.7")
         self.assertFalse(self.call("prepare", snapshot=self.snap("114.7"), action=self.entry())["may_dispatch"])
 
     def test_carry_in_equity_and_unknown_costs_are_not_profit(self):
@@ -667,6 +671,148 @@ class AccountCheckTests(unittest.TestCase):
         with closing(sqlite3.connect(self.db)) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
         self.assertEqual(self.state()["loop"]["cycles"], 1)
+
+    def journal_request(self, **changes):
+        sample = self.state()["last_snapshot"]
+        request = {"snapshot_id": sample["id"], "as_of": sample["as_of"], "activity": "wait",
+                   "summary": "Waiting for a confirmed setup", "reason": "Spread exceeds the planned entry allowance.",
+                   "next_step": "Review the next confirmed candle.", "symbols": ["EURUSD"],
+                   "source_refs": ["synthetic:analysis-1"]}
+        request.update(changes)
+        return request
+
+    def test_journal_is_separate_from_observation_and_financial_result(self):
+        self.start()
+        self.call("cycle", snapshot=self.snap("103"), bar=self.bar())
+        before = self.state()
+        request = self.journal_request(market_summary="Range with fading momentum.")
+        self.now += timedelta(minutes=10)
+        with patch.object(checker, "observe", side_effect=AssertionError("journal must not observe")), \
+                patch.object(checker, "report", side_effect=AssertionError("journal must not report risk")):
+            revision = self.revision
+            result = self.call("journal", **request)
+        self.assertFalse(result["may_dispatch"])
+        self.assertEqual(result["decision"], "journal_saved")
+        self.assertEqual(result["revision"], revision + 1)
+        after = self.state()
+        note = after.pop("last_journal")
+        self.assertEqual(after, before)
+        self.assertEqual(note["version"], 1)
+        self.assertEqual(note["as_of"], before["last_snapshot"]["as_of"])
+        self.assertEqual(note["recorded_at"], checker.utc(self.now))
+        self.assertEqual(note["account"], ACCOUNT)
+        self.assertEqual(note["goal_id"], before["goal"]["id"])
+
+    def test_journal_cannot_create_or_activate_state(self):
+        request = {"snapshot_id": "missing", "as_of": checker.utc(self.now)}
+        with self.assertRaisesRegex(checker.CheckError, "setup_incomplete"):
+            self.call("journal", **request)
+        self.assertFalse(self.db.exists())
+        self.draft(budget="5", target="15")
+        before = self.state()
+        with self.assertRaisesRegex(checker.CheckError, "setup_incomplete"):
+            self.call("journal", **request)
+        self.assertEqual(self.state(), before)
+
+    def test_journal_rejects_bad_binding_and_metadata_without_mutating_state(self):
+        self.start()
+        request = self.journal_request()
+        self.call("check", snapshot=self.snap("95", positions=[position()]))
+        with self.assertRaisesRegex(checker.CheckError, "journal_snapshot_mismatch"):
+            self.call("journal", **request)
+        before = self.state()
+        variants = [{"owner_id": "other"}, {"expected_revision": 0}, {"snapshot_id": "old"},
+                    {"as_of": checker.utc(self.now + timedelta(seconds=1))}, {"intent_id": "not-an-intent"},
+                    {"summary": "x" * 241}, {"summary": "\x00bad"}, {"activity": "may_dispatch"},
+                    {"source_refs": ["C:\\private\\receipt.json"]}, {"symbols": ["EURUSD", "EURUSD"]},
+                    {"peak": "0"}, {"summary": "x" * 131073}, {"pending_order_details": {}}]
+        for changes in variants:
+            with self.subTest(changes=list(changes)):
+                with self.assertRaises(checker.CheckError):
+                    self.call("journal", **self.journal_request(**changes))
+                self.assertEqual(self.state(), before)
+        self.assertIsNotNone(self.state()["loss_latched_at"])
+        self.assertEqual(self.state()["last_result"]["decision"], "loss_stop")
+
+    def test_journal_records_unknown_and_stopped_outcomes_after_owner_handoff(self):
+        self.start()
+        self.call("prepare", snapshot=self.snap(), action=self.entry())
+        self.call("resolve", intent_id="a1", outcome="unknown", evidence_ref="synthetic-timeout", snapshot=self.snap())
+        self.activate_again("resume", self.snap("95"), owner_id="new-owner", takeover_ref="synthetic-handoff")
+        before = self.state()
+        with closing(sqlite3.connect(self.db)) as connection:
+            intents = connection.execute("SELECT * FROM intents").fetchall()
+        self.call("journal", **self.journal_request(owner_id="new-owner", intent_id="a1", activity="blocked"))
+        after = self.state()
+        after.pop("last_journal")
+        self.assertEqual(after, before)
+        self.assertEqual(after["last_result"]["decision"], "loss_stop")
+        with closing(sqlite3.connect(self.db)) as connection:
+            self.assertEqual(connection.execute("SELECT * FROM intents").fetchall(), intents)
+
+    def test_journal_order_enrichment_is_exact_and_cannot_override_risk(self):
+        self.start(pending_orders=[position("00042", "1", kind="entry")])
+        details = {"ticket": "00042", "order_type": "buy_limit", "side": "buy", "volume_initial": "0.020",
+                   "volume_remaining": "0.010", "entry_price": "1.090010000001", "stop_loss": "1.08",
+                   "take_profit": None, "unset_fields": ["take_profit", "expires_at"],
+                   "placed_at": self.state()["last_snapshot"]["as_of"], "ownership": "ace", "ownership_ref": "synthetic:entry-42"}
+        before = self.state()
+        self.call("journal", **self.journal_request(pending_order_details=[details]))
+        recorded = self.state()["last_journal"]["pending_order_details"][0]
+        self.assertEqual(recorded["ticket"], "00042")
+        self.assertEqual(recorded["entry_price"], "1.090010000001")
+        self.assertEqual(recorded["volume_remaining"], "0.010")
+        self.assertEqual(self.state()["last_snapshot"], before["last_snapshot"])
+        self.assertEqual(self.state()["last_metrics"], before["last_metrics"])
+        for changes in ({"ticket": "not-in-snapshot"}, {"symbol": "GBPUSD"}, {"risk": "0"},
+                        {"side": "hold"}, {"volume_unit": "USD"}, {"volume_remaining": "0.03"},
+                        {"entry_price": 1.09}, {"entry_price": "NaN"}, {"ownership_ref": None},
+                        {"stop_loss": "1.08", "unset_fields": ["stop_loss"]}, {"unset_fields": [42]},
+                        {"placed_at": checker.utc(self.now + timedelta(seconds=1))}):
+            with self.subTest(changes=changes):
+                with self.assertRaises(checker.CheckError):
+                    self.call("journal", **self.journal_request(pending_order_details=[dict(details, **changes)]))
+        with self.assertRaisesRegex(checker.CheckError, "journal_order_mismatch"):
+            self.call("journal", **self.journal_request(pending_order_details=[details, details]))
+
+    def test_journal_v1_normalization_does_not_change_financial_state(self):
+        self.start()
+        before = self.state()
+        legacy = copy.deepcopy(before)
+        legacy.pop("loop", None)
+        with closing(sqlite3.connect(self.db)) as connection, connection:
+            checker.save_state(connection, self.revision, legacy, "synthetic-legacy", {}, self.now)
+            connection.execute("PRAGMA user_version = 1")
+        self.call("journal", **self.journal_request())
+        after = self.state()
+        after.pop("last_journal")
+        self.assertEqual(after, before)
+        with closing(sqlite3.connect(self.db)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+
+    def test_display_history_captures_final_accepted_results_not_stale_metrics(self):
+        activated = self.start()
+        with closing(sqlite3.connect(self.db)) as connection:
+            first = json.loads(connection.execute("SELECT detail FROM events ORDER BY id DESC LIMIT 1").fetchone()[0])["display"]
+        self.assertEqual(first["metrics"], activated["metrics"])
+        self.assertEqual(first["as_of"], self.state()["last_snapshot"]["as_of"])
+        self.assertNotIn("may_dispatch", first)
+        sample = self.snap("103", remaining_close_costs=None)
+        rejected_action = self.call("prepare", snapshot=sample, action=self.entry())
+        self.assertIsNotNone(rejected_action["metrics"])
+        with closing(sqlite3.connect(self.db)) as connection:
+            display = json.loads(connection.execute("SELECT detail FROM events ORDER BY id DESC LIMIT 1").fetchone()[0])["display"]
+        self.assertEqual(display["metrics"], rejected_action["metrics"])
+        self.assertIsNone(display["metrics"]["progress_pct"])
+        self.assertEqual(display["snapshot_id"], sample["id"])
+        self.now += timedelta(seconds=61)
+        self.call("check", snapshot=sample)
+        with closing(sqlite3.connect(self.db)) as connection:
+            display = json.loads(connection.execute("SELECT detail FROM events ORDER BY id DESC LIMIT 1").fetchone()[0])["display"]
+        self.assertIsNone(display["metrics"])
+        self.assertIsNone(display["as_of"])
+        self.assertIsNone(display["snapshot_id"])
+        self.assertEqual(self.state()["last_snapshot"]["id"], sample["id"])
 
     def test_cli_json_path_independence_and_invalid_requests(self):
         base = [sys.executable, checker.__file__]
