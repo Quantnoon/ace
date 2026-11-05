@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+import copy
 from datetime import timedelta
 from decimal import Decimal
 import errno
@@ -71,16 +72,114 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertFalse(self.f.db.exists())
 
-    def test_reads_are_byte_identical_and_do_not_migrate_legacy_state(self):
+    def test_v1_v2_v3_reads_preserve_state_and_version_one_display_envelopes(self):
         self.f.start()
-        with closing(sqlite3.connect(self.f.db)) as connection, connection:
-            connection.execute("PRAGMA user_version = 1")
+        self.f.call("journal", **self.f.journal_request())
+        original = self.f.state()
+        for version, status in ((1, None), (2, "active"), (2, "closing"), (2, "closed"),
+                                (3, "active"), (3, "closing"), (3, "closed")):
+            with self.subTest(version=version, status=status):
+                saved = copy.deepcopy(original)
+                saved.pop("loop", None)
+                if version < 3:
+                    saved.pop("observation", None)
+                if status:
+                    saved["loop"] = {"id": "synthetic-loop", "status": status, "cycles": 3,
+                                     "timeframe": "M15", "last_cycle_at": saved["last_snapshot"]["as_of"],
+                                     "next_cycle_at": None, "max_gap_seconds": 901,
+                                     "end_reason": None if status == "active" else "target_latch"}
+                    if version == 3:
+                        saved["loop"].update(policy_id=saved["policy"]["id"], goal_id=saved["goal"]["id"],
+                                             binding_verified_at=checker.utc(self.f.now))
+                with closing(sqlite3.connect(self.f.db)) as connection, connection:
+                    checker.save_state(connection, self.f.revision, saved, "synthetic-reader-fixture", {}, self.f.now)
+                    connection.execute("PRAGMA user_version = " + str(version))
+                before = self.f.db.read_bytes()
+                with closing(sqlite3.connect(self.f.db.as_uri() + "?mode=ro", uri=True)) as connection:
+                    revision, loaded = checker.load_state(connection)
+                expected = dict(saved, loop=saved.get("loop"))
+                self.assertEqual(loaded, expected)
+                with patch.object(checker, "load_state", return_value=(revision, loaded)):
+                    for _ in range(2):
+                        data = self.read()
+                        self.assertEqual(data["revision"], self.f.revision)
+                        self.assertEqual(data["api_version"], 1)
+                        self.assertEqual(data["latest_journal"]["version"], 1)
+                        self.assertTrue(data["progress"]["points"])
+                        self.assertFalse(data["progress"]["points"][0]["legacy"])
+                self.assertEqual(loaded, expected)
+                self.assertEqual(self.f.db.read_bytes(), before)
+                with closing(sqlite3.connect(self.f.db.as_uri() + "?mode=ro", uri=True)) as connection:
+                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], version)
+                if status is None:
+                    self.assertIsNone(data["loop"])
+                    continue
+                self.assertEqual(data["loop"]["status"], status)
+                self.assertEqual(data["loop"]["cycles"], 3)
+                self.assertEqual(data["loop"]["max_gap_seconds"], 901)
+                self.assertEqual(data["loop"]["execution"], "unverified")
+                if version == 2:
+                    self.assertEqual(data["loop"]["last_observation_at"], saved["last_snapshot"]["as_of"])
+                    for field in ("policy_id", "goal_id", "binding_verified_at", "next_latch_check_at",
+                                  "next_wake_at", "wake_reason", "last_observation_received_at",
+                                  "observation_gap_seconds", "max_observation_gap_seconds", "max_observation_gap_at",
+                                  "wake_overdue_seconds"):
+                        self.assertIsNone(data["loop"][field], field)
+                else:
+                    self.assertEqual(data["loop"]["policy_id"], saved["policy"]["id"])
+                    self.assertEqual(data["loop"]["goal_id"], saved["goal"]["id"])
+                    self.assertEqual(data["loop"]["binding_verified_at"], checker.utc(self.f.now))
+
+    def test_loop_projection_allowlists_wakes_and_shared_observation_health(self):
+        self.f.start()
+        at = checker.utc(self.f.now)
+        candle = checker.utc(self.f.now + timedelta(minutes=15, seconds=5))
+        wake = checker.utc(self.f.now + timedelta(minutes=5))
+        raw_loop = {"id": "synthetic-loop", "status": "active", "cycles": 3, "timeframe": "M15",
+                    "last_cycle_at": at, "next_cycle_at": candle, "next_latch_check_at": wake,
+                    "next_wake_at": wake, "wake_reason": "latch_check", "max_gap_seconds": 901,
+                    "end_reason": None, "policy_id": "synthetic-policy", "goal_id": "synthetic-goal",
+                    "binding_verified_at": at, "raw_clock_evidence": {"private": "not-for-display"}}
+        self.rewrite_state(lambda state: state.update(loop=raw_loop))
+        health = {"last_observation_at": at, "last_observation_received_at": at,
+                  "observation_age_seconds": 320, "observation_gap_seconds": 300,
+                  "max_observation_gap_seconds": 600, "max_observation_gap_at": at,
+                  "wake_overdue_seconds": 20, "execution": "unverified", "raw_history": "not-for-display"}
+        state = self.f.state()
+        now = self.f.now + timedelta(seconds=320)
         before = self.f.db.read_bytes()
-        for _ in range(3):
-            self.assertEqual(self.read()["revision"], self.f.revision)
+        with patch.object(checker, "loop_health", return_value=health) as shared_health:
+            data = self.read(now=now)
+        shared_health.assert_called_once_with(state, now)
+        expected = {key: value for key, value in raw_loop.items() if key != "raw_clock_evidence"}
+        expected.update({key: value for key, value in health.items() if key != "raw_history"})
+        self.assertEqual(data["loop"], expected)
         self.assertEqual(self.f.db.read_bytes(), before)
-        with closing(sqlite3.connect(self.f.db)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+        self.assertNotIn("not-for-display", checker.encode(data))
+
+    def test_unknown_loop_health_scalars_are_not_zero_or_execution_claims(self):
+        self.f.start()
+        raw_loop = {"id": "synthetic-loop", "status": "active", "policy_id": [], "goal_id": False,
+                    "binding_verified_at": "invalid", "next_latch_check_at": [], "next_wake_at": False,
+                    "wake_reason": {}, "max_gap_seconds": "901"}
+        self.rewrite_state(lambda state: state.update(loop=raw_loop))
+        seconds = ("observation_age_seconds", "observation_gap_seconds", "max_observation_gap_seconds", "wake_overdue_seconds")
+        for value in (None, True, "0", -1, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                health = dict.fromkeys(seconds, value)
+                health.update(last_observation_at=[], last_observation_received_at="invalid",
+                              max_observation_gap_at=False, execution="running")
+                with patch.object(checker, "loop_health", return_value=health):
+                    data = self.read()
+                self.assertEqual(data["loop"]["execution"], "unverified")
+                for field in (*seconds, "policy_id", "goal_id", "binding_verified_at", "next_latch_check_at",
+                              "next_wake_at", "wake_reason", "max_gap_seconds", "last_observation_at",
+                              "last_observation_received_at", "max_observation_gap_at"):
+                    self.assertIsNone(data["loop"][field], field)
+                self.assertEqual(data["metrics"]["equity"], "100")
+                self.assertTrue(data["warnings"])
+        self.rewrite_state(lambda state: state["loop"].update(wake_reason="future_unknown_reason"))
+        self.assertIsNone(self.read()["loop"]["wake_reason"])
 
     def test_health_and_repeated_start_do_not_open_or_create_account_state(self):
         with patch.object(sqlite3, "connect", side_effect=AssertionError("health must not open account state")):
@@ -228,16 +327,29 @@ class DashboardTests(unittest.TestCase):
     def test_journal_and_revision_do_not_refresh_observation_or_duplicate_points(self):
         self.f.start()
         sample = self.f.snap("102")
-        self.f.call("check", snapshot=sample)
+        self.f.call("cycle", snapshot=sample)
         self.f.call("check", snapshot=sample)
         self.f.now += timedelta(seconds=70)
+        before = self.read()
         self.f.call("journal", **self.f.journal_request())
         data = self.read()
+        self.assertEqual(data["loop"], before["loop"])
+        self.assertEqual(data["snapshot"], before["snapshot"])
+        self.assertEqual(data["revision"], before["revision"] + 1)
+        self.assertEqual(data["loop"]["last_observation_at"], sample["as_of"])
+        self.assertEqual(data["loop"]["observation_age_seconds"], 70)
         self.assertEqual(len(data["progress"]["points"]), 2)
         self.assertEqual(data["snapshot"]["freshness"], "stale")
         self.assertEqual(data["latest_journal"]["as_of"], sample["as_of"])
         self.assertGreater(data["latest_journal"]["recorded_at"], sample["as_of"])
         self.assertEqual(data["activity"]["items"][0]["command"], "journal")
+        with self.assertRaisesRegex(checker.CheckError, "journal_snapshot_mismatch"):
+            self.f.call("journal", **self.f.journal_request(snapshot_id="synthetic-missing"))
+        self.assertEqual(self.read()["loop"], data["loop"])
+        later = self.read(now=self.f.now + timedelta(seconds=10))
+        self.assertEqual(later["loop"]["observation_age_seconds"], 80)
+        self.assertEqual(later["loop"]["last_cycle_at"], data["loop"]["last_cycle_at"])
+        self.assertEqual(later["loop"]["next_wake_at"], data["loop"]["next_wake_at"])
 
     def test_pending_orders_unknown_empty_protective_and_enrichment(self):
         self.f.start(pending_orders=None)

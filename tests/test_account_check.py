@@ -73,11 +73,12 @@ class AccountCheckTests(unittest.TestCase):
     def draft(self, **values):
         return self.call("draft", account=ACCOUNT, source_ref="synthetic-account-read", **values)
 
-    def start(self, budget="5", target="15", equity="100", **snapshot_changes):
-        self.draft(budget=budget, target=target, mandate=MANDATE)
+    def start(self, budget="5", target="15", equity="100", config=None, **snapshot_changes):
+        config = MANDATE if config is None else config
+        self.draft(budget=budget, target=target, mandate=config)
         self.anchor = None
         sample = self.snap(equity, **snapshot_changes)
-        result = self.call("activate", mode="start", mandate=MANDATE, baseline=sample, snapshot=sample,
+        result = self.call("activate", mode="start", mandate=config, baseline=sample, snapshot=sample,
                            approval_ref="synthetic-final-approval", approved_at=checker.utc(self.now))
         self.assertIsNotNone(self.state()["policy"])
         return result
@@ -576,13 +577,22 @@ class AccountCheckTests(unittest.TestCase):
         self.assertEqual(legacy.read_text(encoding="utf-8"), "untrusted,legacy,records\nnot,new,approval\n")
         self.assertNotIn("untrusted", checker.encode(self.state()))
 
-    def bar(self, minutes_ago=0):
-        moment = self.now - timedelta(minutes=minutes_ago)
-        return {"open_time": checker.utc(moment.replace(second=0, microsecond=0)), "confirmed": True}
+    def clock(self, minutes=15, symbol="EURUSD"):
+        # Synthetic broker boundaries, not the production scheduling algorithm.
+        boundary = self.now.replace(minute=self.now.minute // minutes * minutes, second=0, microsecond=0)
+        return {"symbol": symbol, "source_ref": "synthetic:broker-calendar", "as_of": checker.utc(self.now),
+                "last_boundary_at": checker.utc(boundary),
+                "next_boundary_at": checker.utc(boundary + timedelta(minutes=minutes))}
+
+    def bar(self, minutes_ago=0, minutes=15, symbol="EURUSD"):
+        closed = checker.stamp(self.clock(minutes, symbol)["last_boundary_at"], "boundary") - timedelta(minutes=minutes_ago)
+        return {"symbol": symbol, "source_ref": "synthetic:closed-bar", "confirmed": True,
+                "open_time": checker.utc(closed - timedelta(minutes=minutes)), "close_time": checker.utc(closed)}
 
     def test_cycle_opens_session_and_schedules_next_candle(self):
         self.start()
-        result = self.call("cycle", snapshot=self.snap(), bar=self.bar())
+        self.now += timedelta(seconds=5)
+        result = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar(), market_state="open")
         loop = result["loop"]
         self.assertTrue(result["may_continue"])
         self.assertEqual(loop["status"], "active")
@@ -590,17 +600,20 @@ class AccountCheckTests(unittest.TestCase):
         self.assertEqual(loop["timeframe"], "M15")
         self.assertEqual(loop["market_state"], "open")
         self.assertTrue(loop["bar_confirmed"])
-        expected = checker.next_boundary(checker.stamp(self.state()["last_snapshot"]["as_of"], "as_of"), "M15", 5)
-        self.assertEqual(loop["next_cycle_at"], checker.utc(expected))
+        self.assertEqual(loop["next_cycle_at"], "2026-11-03T20:15:05Z")
+        self.assertEqual(loop["next_wake_at"], "2026-11-03T20:15:05Z")
+        self.assertEqual(loop["wake_reason"], "candle")
+        self.assertEqual(loop["policy_id"], self.state()["policy"]["id"])
         self.assertGreater(loop["next_cycle_at"], self.state()["last_snapshot"]["as_of"])
 
     def test_cycle_records_gap_and_missing_bar_without_ending(self):
         self.start()
-        closed_bar = self.bar(minutes_ago=15)
-        first = self.call("cycle", snapshot=self.snap(), bar=closed_bar)
+        self.now += timedelta(seconds=5)
+        closed_bar = self.bar()
+        first = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=closed_bar)
         self.assertEqual(first["loop"]["cycles"], 1)
         self.now += timedelta(minutes=20)
-        second = self.call("cycle", snapshot=self.snap(), bar=closed_bar)
+        second = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=closed_bar)
         loop = second["loop"]
         self.assertTrue(second["may_continue"])
         self.assertEqual(loop["status"], "active")
@@ -612,7 +625,7 @@ class AccountCheckTests(unittest.TestCase):
 
     def test_cycle_market_closed_and_no_bar_still_continues(self):
         self.start()
-        result = self.call("cycle", snapshot=self.snap(), bar=self.bar(minutes_ago=60),
+        result = self.call("cycle", snapshot=self.snap(), clock=self.clock(),
                            market_state="closed")
         self.assertTrue(result["may_continue"])
         self.assertEqual(result["loop"]["status"], "active")
@@ -623,7 +636,7 @@ class AccountCheckTests(unittest.TestCase):
         sample = self.snap(equity="94", pending_orders=[{"ticket": "o1", "symbol": "EURUSD",
                                                          "kind": "entry", "protected": True, "risk": "1"}])
         result = self.call("cycle", snapshot=sample, bar=self.bar())
-        self.assertFalse(result["may_continue"])
+        self.assertTrue(result["may_continue"])
         self.assertEqual(result["loop"]["status"], "closing")
         self.assertEqual(result["loop"]["end_reason"], "loss_latch")
         self.assertIsNone(result["loop"]["ended_at"])
@@ -640,16 +653,18 @@ class AccountCheckTests(unittest.TestCase):
                 result = self.call("cycle", snapshot=self.snap(), timeframe=timeframe)
                 self.assertIn("invalid_timeframe", result["reason_codes"])
                 self.assertTrue(result["may_continue"])
-                self.assertIsNone(result["loop"])
+                self.assertEqual(result["loop"]["timeframe"], "M15")
+                self.assertIsNone(result["loop"]["next_cycle_at"])
         result = self.call("cycle", snapshot=self.snap(), buffer_seconds=90)
         self.assertIn("invalid_buffer_seconds", result["reason_codes"])
         result = self.call("cycle", snapshot=self.snap(), market_state="holiday")
         self.assertIn("invalid_market_state", result["reason_codes"])
         future = self.now + timedelta(minutes=5)
         result = self.call("cycle", snapshot=self.snap(),
+                           clock=self.clock(),
                            bar={"open_time": checker.utc(future), "confirmed": True})
         self.assertIn("future_bar", result["reason_codes"])
-        self.assertEqual(self.state()["loop"], None)
+        self.assertEqual(self.state()["loop"]["status"], "active")
 
     def test_cycle_rejects_stale_snapshot_without_counting_a_cycle(self):
         self.start()
@@ -669,8 +684,422 @@ class AccountCheckTests(unittest.TestCase):
         result = self.call("cycle", snapshot=self.snap(), bar=self.bar())
         self.assertTrue(result["may_continue"])
         with closing(sqlite3.connect(self.db)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
         self.assertEqual(self.state()["loop"]["cycles"], 1)
+
+    def test_one_approval_batch_journal_and_repeated_cycles_need_no_reactivation(self):
+        config = dict(MANDATE, entry_timeframe="M5", latch_check_seconds=300)
+        self.start(config=config)
+        self.assertIsNone(self.state()["loop"])
+        approval = self.state()["approval_ref"]
+        self.now += timedelta(seconds=5)
+        first = self.call("cycle", snapshot=self.snap(), clock=self.clock(5), bar=self.bar(minutes=5))
+        loop_id = first["loop"]["id"]
+        self.assertTrue(first["may_continue"])
+        prepared = self.call("prepare", snapshot=self.snap(), action=self.entry())
+        self.assertTrue(prepared["may_dispatch"])
+        orders = [position("pending-1", "1", kind="entry")]
+        resolved = self.call("resolve", intent_id="a1", outcome="completed", readback_verified=True,
+                             broker_tickets=["pending-1"], evidence_ref="synthetic:pending-readback",
+                             snapshot=self.snap(pending_orders=orders))
+        self.assertTrue(resolved["may_continue"])
+        self.assertEqual(resolved["loop"]["cycles"], 1)
+        journal = self.call("journal", **self.journal_request(activity="entry"))
+        self.assertNotIn("may_continue", journal)
+        self.assertTrue(self.state()["last_result"]["may_continue"])
+        for _ in range(4):
+            self.now += timedelta(minutes=5)
+            result = self.call("cycle", snapshot=self.snap(pending_orders=orders),
+                               clock=self.clock(5), bar=self.bar(minutes=5))
+            self.assertTrue(result["may_continue"])
+            self.assertEqual(result["required_action"], "none")
+            self.assertEqual(result["loop"]["id"], loop_id)
+            self.assertEqual(self.state()["approval_ref"], approval)
+            self.call("journal", **self.journal_request())
+        self.assertEqual(self.state()["loop"]["cycles"], 5)
+        triggered = self.call("check", snapshot=self.snap("115", pending_orders=orders))
+        self.assertTrue(triggered["may_continue"])
+        self.assertEqual(triggered["loop"]["status"], "closing")
+        permitted = self.call("prepare", snapshot=self.snap("115", pending_orders=orders),
+                              action=self.reduction(ticket="pending-1", reason="target"))
+        self.assertTrue(permitted["may_dispatch"])
+        final = self.call("resolve", intent_id="r1", outcome="completed", readback_verified=True,
+                          broker_tickets=["pending-1"], evidence_ref="synthetic:cancelled-flat", snapshot=self.snap("114.7"))
+        self.assertFalse(final["may_continue"])
+        self.assertEqual(final["loop"]["id"], loop_id)
+        self.assertEqual(final["loop"]["cycles"], 5)
+        self.assertEqual(final["loop"]["status"], "closed")
+        self.assertEqual(final["metrics"]["final_shortfall"], "0.3")
+        with closing(sqlite3.connect(self.db)) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM events WHERE command='activate'").fetchone()[0], 1)
+
+    def test_closed_identity_late_fill_and_invalid_read_do_not_fabricate_completion(self):
+        self.start()
+        first = self.call("cycle", snapshot=self.snap("95"))
+        self.assertFalse(first["may_continue"])
+        original = self.state()["loop"]
+        repeated = self.call("cycle", snapshot=self.snap("95"))
+        self.assertEqual(repeated["loop"], original)
+        stale = self.snap("95")
+        self.now += timedelta(seconds=61)
+        failed = self.call("cycle", snapshot=stale)
+        self.assertTrue(failed["may_continue"])
+        self.assertFalse(failed["closure_verified"])
+        self.assertEqual(failed["loop"], original)
+        late = self.call("check", snapshot=self.snap("95", positions=[position()]))
+        self.assertEqual(late["loop"]["id"], original["id"])
+        self.assertEqual(late["loop"]["status"], "closing")
+        self.assertIsNone(late["loop"]["ended_at"])
+        self.assertTrue(late["may_continue"])
+        self.assertEqual(late["loop"]["wake_reason"], "closure")
+        with closing(sqlite3.connect(self.db)) as connection:
+            detail = json.loads(connection.execute("SELECT detail FROM events ORDER BY id DESC LIMIT 1").fetchone()[0])
+        self.assertEqual(detail["previous_loop_lifecycle"]["ended_at"], original["ended_at"])
+        final = self.call("check", snapshot=self.snap("94.9"))
+        self.assertEqual(final["loop"]["id"], original["id"])
+        self.assertNotEqual(final["loop"]["ended_at"], original["ended_at"])
+        self.assertIsNone(final["loop"]["next_wake_at"])
+        self.assertFalse(final["may_continue"])
+
+    def test_loop_lifecycle_converges_on_prepare_rejected_activation_and_both_latches(self):
+        self.start()
+        initial = self.call("cycle", snapshot=self.snap())
+        self.call("check", snapshot=self.snap("120", remaining_close_costs="10", costs_final=False))
+        result = self.call("prepare", snapshot=self.snap("115", positions=[position()]),
+                           action=self.reduction(reason="loss"))
+        self.assertTrue(result["may_dispatch"])
+        self.assertTrue(result["may_continue"])
+        self.assertEqual(result["loop"]["end_reason"], "loss_latch")
+        self.assertIsNotNone(result["target_latched_at"])
+        self.assertEqual(result["loop"]["cycles"], initial["loop"]["cycles"])
+        denied = self.activate_again("new_goal", self.snap("115", positions=[position()]))
+        self.assertEqual(denied["loop"]["id"], initial["loop"]["id"])
+        self.assertEqual(denied["loop"]["status"], "closing")
+        self.assertTrue(denied["may_continue"])
+
+    def test_approved_timeframe_and_settling_window_control_the_deadline(self):
+        self.start()
+        early = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar())
+        self.assertFalse(early["loop"]["bar_advanced"])
+        self.assertEqual(early["loop"]["next_cycle_at"], "2026-11-03T20:00:05Z")
+        self.assertEqual(early["loop"]["next_wake_at"], "2026-11-03T20:00:05Z")
+        self.now = datetime(2026, 11, 3, 20, 0, 5, tzinfo=timezone.utc)
+        settled = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar())
+        self.assertTrue(settled["loop"]["bar_advanced"])
+        self.assertEqual(settled["loop"]["next_cycle_at"], "2026-11-03T20:15:05Z")
+        mismatch = self.call("cycle", snapshot=self.snap(), timeframe="H4", clock=self.clock(), bar=self.bar())
+        self.assertIn("timeframe_mismatch", mismatch["reason_codes"])
+        self.assertEqual(mismatch["loop"]["timeframe"], "M15")
+        self.assertEqual(self.state()["mandate"], MANDATE)
+        self.assertNotIn("entry_timeframe", self.state()["mandate"])
+        for buffer in (0, 2, 6, 60, True):
+            result = self.call("cycle", snapshot=self.snap(), clock=self.clock(), buffer_seconds=buffer)
+            self.assertIn("invalid_buffer_seconds", result["reason_codes"])
+
+    def test_broker_offsets_dst_and_calendar_boundaries_are_not_utc_guesses(self):
+        self.start()
+        cases = [
+            ("H4", "2026-11-04T18:00:00Z", "2026-11-04T22:00:00Z", "2026-11-05T02:00:00Z", "2026-11-05T02:00:05Z"),
+            ("D1", "2027-03-26T22:00:00Z", "2027-03-27T22:00:00Z", "2027-03-28T21:00:00Z", "2027-03-28T21:00:05Z"),
+            ("W1", "2027-03-21T22:00:00Z", "2027-03-28T21:00:00Z", "2027-04-04T21:00:00Z", "2027-04-04T21:00:05Z"),
+            ("MN1", "2027-03-31T21:00:00Z", "2027-04-30T21:00:00Z", "2027-05-31T21:00:00Z", "2027-05-31T21:00:05Z"),
+        ]
+        for timeframe, opened, boundary, following, expected in cases:
+            with self.subTest(timeframe=timeframe):
+                config = dict(MANDATE, entry_timeframe=timeframe)
+                self.now = checker.stamp(boundary, "synthetic_boundary") + timedelta(seconds=5)
+                self.draft(mandate=config)
+                self.activate_again("reauthorize", mandate=config)
+                sample = self.snap()
+                clock = {"symbol": "EURUSD", "source_ref": "synthetic:calendar", "as_of": sample["as_of"],
+                         "last_boundary_at": boundary, "next_boundary_at": following}
+                bar = {"symbol": "EURUSD", "source_ref": "synthetic:bar", "confirmed": True,
+                       "open_time": opened, "close_time": boundary}
+                result = self.call("cycle", snapshot=sample, clock=clock, bar=bar)
+                self.assertEqual(result["decision"], "within_budget")
+                self.assertEqual(result["loop"]["next_cycle_at"], expected)
+                self.assertEqual(result["loop"]["next_wake_at"], expected)
+
+    def test_duplicate_and_missing_bars_do_not_replay_candle_progress_or_health(self):
+        self.start(config=dict(MANDATE, latch_check_seconds=300))
+        self.now += timedelta(seconds=5)
+        sample = self.snap()
+        first = self.call("cycle", snapshot=sample, clock=self.clock(), bar=self.bar())
+        observation = self.state()["observation"]
+        self.now += timedelta(seconds=3)
+        replay = self.call("cycle", snapshot=sample, clock=self.clock(), bar=self.bar())
+        self.assertIn("duplicate_cycle_snapshot", replay["reason_codes"])
+        self.assertEqual(replay["loop"]["cycles"], 1)
+        self.assertFalse(replay["loop"]["bar_advanced"])
+        self.assertEqual(self.state()["observation"], observation)
+        self.assertEqual(replay["loop"]["next_latch_check_at"], first["loop"]["next_latch_check_at"])
+        repeat = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar())
+        self.assertEqual(repeat["loop"]["cycles"], 2)
+        self.assertFalse(repeat["loop"]["bar_advanced"])
+        high_water = repeat["loop"]["bar_high_water"]
+        missing = self.call("cycle", snapshot=self.snap(), clock=self.clock())
+        self.assertFalse(missing["loop"]["bar_confirmed"])
+        self.assertFalse(missing["loop"]["bar_advanced"])
+        self.assertEqual(missing["loop"]["bar_high_water"], high_water)
+        regressing = self.bar()
+        regressing["open_time"] = "2026-11-03T19:30:00Z"
+        rejected = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=regressing)
+        self.assertIn("regressing_bar", rejected["reason_codes"])
+        self.assertEqual(rejected["loop"]["bar_high_water"], high_water)
+        conflicting = dict(self.bar(), open_time="2026-11-03T19:50:00Z")
+        rejected = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=conflicting)
+        self.assertIn("conflicting_bar", rejected["reason_codes"])
+        self.assertFalse(rejected["loop"]["bar_advanced"])
+        self.assertEqual(rejected["loop"]["bar_high_water"], high_water)
+        other = self.call("cycle", snapshot=self.snap(), clock=self.clock(symbol="GBPUSD"), bar=self.bar(symbol="GBPUSD"))
+        self.assertTrue(other["loop"]["bar_advanced"])
+        self.assertEqual(set(other["loop"]["bar_high_water"]), {"EURUSD", "GBPUSD"})
+
+    def test_missing_unconfirmed_and_in_progress_bars_are_not_confirmed_advances(self):
+        self.start()
+        self.now += timedelta(seconds=5)
+        sample = self.snap()
+        clock = self.clock()
+        forming = dict(self.bar(), open_time=clock["last_boundary_at"], close_time=clock["next_boundary_at"], confirmed=False)
+        result = self.call("cycle", snapshot=sample, clock=clock, bar=forming)
+        self.assertFalse(result["loop"]["bar_advanced"])
+        self.assertFalse(result["loop"]["bar_confirmed"])
+        self.assertEqual(result["loop"]["wake_reason"], "bar_retry")
+        invalid = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=dict(forming, confirmed=True))
+        self.assertIn("invalid_bar_clock", invalid["reason_codes"])
+        legacy = self.call("cycle", snapshot=self.snap(), clock=self.clock(),
+                           bar={"open_time": self.bar()["open_time"], "confirmed": True})
+        self.assertIn("bar_evidence_unavailable", legacy["reason_codes"])
+        self.assertEqual(legacy["loop"]["bar_high_water"], {})
+
+    def test_closed_market_backoff_counts_boundaries_not_polls_and_never_delays_tripwire(self):
+        self.start()
+        self.now += timedelta(seconds=5)
+        first = self.call("cycle", snapshot=self.snap(), clock=self.clock(), market_state="closed")
+        self.assertEqual(first["loop"]["missing_bars"], 1)
+        repeated = self.call("cycle", snapshot=self.snap(), clock=self.clock(), market_state="closed")
+        self.assertEqual(repeated["loop"]["missing_bars"], 1)
+        self.assertEqual(repeated["loop"]["closed_boundaries"], 1)
+        self.now = datetime(2026, 11, 3, 20, 15, 6, tzinfo=timezone.utc)
+        second = self.call("cycle", snapshot=self.snap(), clock=self.clock(), market_state="closed")
+        self.assertEqual(second["loop"]["closed_boundaries"], 2)
+        self.assertEqual(second["loop"]["wake_reason"], "market_closed")
+        self.assertEqual(second["loop"]["next_wake_at"], "2026-11-03T20:20:07Z")
+        config = dict(MANDATE, latch_check_seconds=30)
+        self.draft(mandate=config)
+        reauthorized = self.activate_again("reauthorize", mandate=config)
+        self.assertEqual(reauthorized["loop"]["wake_reason"], "latch_check")
+        self.assertEqual(reauthorized["loop"]["next_latch_check_at"], "2026-11-03T20:15:38Z")
+        mixed = self.call("cycle", snapshot=self.snap(), clock=self.clock(), market_state="unknown")
+        self.assertEqual(mixed["loop"]["closed_boundaries"], 0)
+        self.assertEqual(mixed["loop"]["wake_reason"], "bar_retry")
+        self.assertEqual(mixed["loop"]["next_wake_at"], "2026-11-03T20:15:24Z")
+
+    def test_observation_health_differs_from_cycle_spacing_and_journal_is_not_a_heartbeat(self):
+        self.start(config=dict(MANDATE, latch_check_seconds=300))
+        self.now += timedelta(seconds=5)
+        first = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar())
+        self.assertEqual(first["loop"]["wake_reason"], "latch_check")
+        self.assertEqual(first["loop"]["next_wake_at"], "2026-11-03T20:05:07Z")
+        for minute in (5, 10):
+            self.now = datetime(2026, 11, 3, 20, minute, 6, tzinfo=timezone.utc)
+            sample = self.snap()
+            self.now += timedelta(seconds=10)
+            self.call("check", snapshot=sample)
+        self.now = datetime(2026, 11, 3, 20, 15, 6, tzinfo=timezone.utc)
+        result = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar())
+        self.assertEqual(result["loop"]["gap_seconds"], 900)
+        self.assertEqual(result["loop_health"]["observation_gap_seconds"], 300)
+        self.assertEqual(result["loop_health"]["max_observation_gap_seconds"], 300)
+        self.assertEqual(result["loop_health"]["max_observation_gap_at"], "2026-11-03T20:05:07Z")
+        before = self.state()
+        self.now += timedelta(minutes=6)
+        self.call("journal", **self.journal_request())
+        after = self.state()
+        after.pop("last_journal")
+        self.assertEqual(after, before)
+        status = self.call("status")
+        self.assertEqual(status["loop_health"]["execution"], "unverified")
+        self.assertEqual(status["loop_health"]["observation_age_seconds"], 360)
+        self.assertEqual(status["loop_health"]["wake_overdue_seconds"], 60)
+
+    def test_initial_live_receipt_schedules_tripwire_but_snapshot_reuse_does_not_refresh_it(self):
+        self.now = datetime(2026, 11, 3, 20, 0, 9, tzinfo=timezone.utc)
+        self.start(config=dict(MANDATE, latch_check_seconds=300))
+        sample = self.state()["last_snapshot"]
+        observation = self.state()["observation"]
+        first = self.call("cycle", snapshot=sample, clock=self.clock(), bar=self.bar())
+        self.assertEqual(first["loop"]["next_latch_check_at"], "2026-11-03T20:05:10Z")
+        self.now += timedelta(seconds=30)
+        checked = self.call("check", snapshot=sample)
+        self.assertEqual(self.state()["observation"], observation)
+        self.assertEqual(checked["loop"]["next_latch_check_at"], "2026-11-03T20:05:10Z")
+
+    def test_invalid_clock_and_failed_observation_preserve_breach_and_revision_contract(self):
+        self.start()
+        first = self.call("cycle", snapshot=self.snap())
+        self.assertIn("broker_clock_unavailable", first["reason_codes"])
+        self.assertEqual(first["loop"]["market_state"], "unknown")
+        self.assertIsNone(first["loop"]["next_cycle_at"])
+        self.assertTrue(first["may_continue"])
+        sample = self.snap()
+        revision = self.revision
+        before = self.state()
+        self.now += timedelta(seconds=61)
+        rejected = self.call("cycle", snapshot=sample)
+        self.assertEqual(rejected["revision"], revision + 1)
+        self.assertEqual(self.state()["observation"], before["observation"])
+        self.assertEqual(self.state()["loop"]["cycles"], 1)
+        bad_clock = dict(self.clock(), symbol="UNAPPROVED")
+        breached = self.call("cycle", snapshot=self.snap("95", positions=[position()]), clock=bad_clock)
+        self.assertIn("unapproved_clock_symbol", breached["reason_codes"])
+        self.assertEqual(breached["decision"], "loss_stop")
+        self.assertTrue(breached["may_continue"])
+        self.assertEqual(breached["loop"]["status"], "closing")
+        self.assertEqual(breached["loop"]["wake_reason"], "closure")
+        self.assertTrue(self.call("prepare", snapshot=self.snap("95", positions=[position()]),
+                                  action=self.reduction(reason="loss"))["may_dispatch"])
+
+    def test_clock_expired_at_a_boundary_cannot_advance_the_superseded_candle(self):
+        self.start()
+        self.now = datetime(2026, 11, 3, 20, 15, 6, tzinfo=timezone.utc)
+        sample = self.snap()
+        clock = {"symbol": "EURUSD", "source_ref": "synthetic:before-boundary", "as_of": "2026-11-03T20:14:59Z",
+                 "last_boundary_at": "2026-11-03T20:00:00Z", "next_boundary_at": "2026-11-03T20:15:00Z"}
+        bar = {"symbol": "EURUSD", "source_ref": "synthetic:old-bar", "confirmed": True,
+               "open_time": "2026-11-03T19:45:00Z", "close_time": "2026-11-03T20:00:00Z"}
+        result = self.call("cycle", snapshot=sample, clock=clock, bar=bar)
+        self.assertIn("invalid_or_stale_broker_clock", result["reason_codes"])
+        self.assertFalse(result["loop"]["bar_advanced"])
+        self.assertEqual(result["loop"]["bar_high_water"], {})
+        self.assertIsNone(result["loop"]["next_cycle_at"])
+        self.assertEqual(result["loop"]["wake_reason"], "clock_refresh")
+        self.assertEqual(result["loop"]["cycles"], 1)
+        self.assertTrue(result["may_continue"])
+
+    def test_symbol_reauthorization_discards_out_of_scope_clock_and_closed_market_evidence(self):
+        self.start()
+        self.now += timedelta(seconds=5)
+        original = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar())["loop"]
+        self.call("cycle", snapshot=self.snap(), clock=self.clock(symbol="GBPUSD"), bar=self.bar(symbol="GBPUSD"))
+        config = dict(MANDATE, symbols=["GBPUSD", "XAUUSD"])
+        self.draft(mandate=config)
+        changed = self.activate_again("reauthorize", mandate=config)
+        self.assertEqual(changed["loop"]["id"], original["id"])
+        self.assertEqual(set(changed["loop"]["bar_high_water"]), {"GBPUSD"})
+        self.assertIsNone(changed["loop"]["clock"])
+        self.assertIsNone(changed["loop"]["next_cycle_at"])
+        self.assertEqual(changed["loop"]["wake_reason"], "clock_refresh")
+        for minute in (15, 30):
+            self.now = datetime(2026, 11, 3, 20, minute, 6, tzinfo=timezone.utc)
+            closed = self.call("cycle", snapshot=self.snap(), clock=self.clock(symbol="GBPUSD"), market_state="closed")
+        self.assertEqual(closed["loop"]["wake_reason"], "market_closed")
+        self.draft(mandate=MANDATE)
+        expanded = self.activate_again("reauthorize", mandate=MANDATE)
+        self.assertEqual(expanded["loop"]["market_state"], "unknown")
+        self.assertEqual(expanded["loop"]["closed_boundaries"], 0)
+        self.assertEqual(expanded["loop"]["wake_reason"], "clock_refresh")
+        self.assertEqual(expanded["loop"]["next_wake_at"], checker.utc(self.now))
+        self.assertEqual(expanded["loop"]["cycles"], closed["loop"]["cycles"])
+
+    def test_reviewed_baseline_latch_prioritizes_closure_without_refreshing_legacy_health(self):
+        self.start()
+        self.now += timedelta(seconds=5)
+        self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar())
+        legacy = self.state()
+        legacy.pop("observation")
+        with closing(sqlite3.connect(self.db)) as connection, connection:
+            checker.save_state(connection, self.revision, legacy, "synthetic-legacy-observation", {}, self.now)
+            connection.execute("PRAGMA user_version=2")
+        source_before = legacy["last_snapshot"]["as_of"]
+        baseline = self.snap("95")
+        self.draft(target="20")
+        result = self.call("activate", mode="new_goal", mandate=MANDATE, baseline=baseline, snapshot=None,
+                           approval_ref="synthetic:reviewed-baseline", approved_at=checker.utc(self.now))
+        self.assertIsNone(result["metrics"])
+        self.assertIsNotNone(result["loss_latched_at"])
+        self.assertEqual(result["loop"]["status"], "closing")
+        self.assertEqual(result["loop"]["wake_reason"], "closure")
+        self.assertEqual(result["loop"]["next_wake_at"], checker.utc(self.now))
+        self.assertIsNone(result["loop"]["next_cycle_at"])
+        self.assertTrue(result["may_continue"])
+        self.assertEqual(result["loop_health"]["last_observation_at"], source_before)
+        self.assertIsNone(result["loop_health"]["last_observation_received_at"])
+        self.assertIsNone(result["loop_health"]["max_observation_gap_seconds"])
+
+    def test_goal_and_timeframe_transitions_preserve_or_supersede_the_right_loop(self):
+        self.start()
+        self.now += timedelta(seconds=5)
+        self.call("cycle", snapshot=self.snap("104"), clock=self.clock(), bar=self.bar())
+        original = self.state()
+        config = dict(MANDATE, entry_timeframe="H1")
+        self.draft(mandate=config)
+        changed = self.activate_again("reauthorize", self.snap("103"), mandate=config)
+        self.assertEqual(changed["loop"]["id"], original["loop"]["id"])
+        self.assertEqual(changed["loop"]["timeframe"], "H1")
+        self.assertEqual(changed["loop"]["bar_high_water"], {})
+        self.assertEqual(self.state()["policy"], original["policy"])
+        self.assertEqual(self.state()["peak"], "104")
+        self.draft(target="20")
+        self.activate_again("new_goal", self.snap("103"), mandate=config)
+        self.assertIsNone(self.state()["loop"])
+        self.assertEqual(self.state()["policy"], original["policy"])
+        with closing(sqlite3.connect(self.db)) as connection:
+            detail = json.loads(connection.execute("SELECT detail FROM events WHERE command='activate' ORDER BY id DESC LIMIT 1").fetchone()[0])
+        self.assertEqual(detail["previous_state"]["loop"]["id"], original["loop"]["id"])
+        new = self.call("cycle", snapshot=self.snap("103"), clock=self.clock(60), bar=self.bar(minutes=60))
+        self.assertNotEqual(new["loop"]["id"], original["loop"]["id"])
+        self.assertEqual(new["loop"]["cycles"], 1)
+        self.assertEqual(new["loop"]["goal_id"], self.state()["goal"]["id"])
+
+    def test_v2_loop_journal_upgrade_preserves_history_until_prospective_resume_binding(self):
+        self.start()
+        self.now += timedelta(seconds=5)
+        self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar())
+        self.call("prepare", snapshot=self.snap(), action=self.entry())
+        self.call("resolve", intent_id="a1", outcome="unknown", evidence_ref="synthetic:timeout", snapshot=self.snap())
+        self.call("journal", **self.journal_request(intent_id="a1"))
+        state = self.state()
+        legacy_fields = ("id", "status", "started_at", "cycles", "last_cycle_at", "timeframe", "bar_open_time",
+                         "bar_confirmed", "bar_advanced", "gap_seconds", "max_gap_seconds", "max_gap_at",
+                         "missing_bars", "market_state", "next_cycle_at", "end_reason", "ended_at")
+        legacy_loop = {key: state["loop"].get(key) for key in legacy_fields}
+        legacy_loop["timeframe"] = "H1"  # The v2 request override could disagree with the approved M15 default.
+        state["loop"] = legacy_loop
+        state.pop("observation")
+        state["last_result"].pop("loop_health", None)
+        state["last_result"]["loop"] = copy.deepcopy(legacy_loop)
+        with closing(sqlite3.connect(self.db)) as connection, connection:
+            checker.save_state(connection, self.revision, state, "synthetic-v2", {}, self.now)
+            connection.execute("PRAGMA user_version=2")
+            intents = connection.execute("SELECT * FROM intents").fetchall()
+        self.assertEqual(self.state(), state)
+        with closing(sqlite3.connect(self.db)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.call("journal", **self.journal_request(intent_id="a1"))
+        self.assertEqual(self.state()["loop"], legacy_loop)
+        self.assertNotIn("observation", self.state())
+        with closing(sqlite3.connect(self.db)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("SELECT * FROM intents").fetchall(), intents)
+            detail = json.loads(connection.execute("SELECT detail FROM events ORDER BY id DESC LIMIT 1").fetchone()[0])
+        self.assertEqual(detail["migration"]["legacy_loop"], legacy_loop)
+        denied = self.call("prepare", snapshot=self.snap(), action=self.entry("a2"))
+        self.assertIn("loop_resume_required", denied["reason_codes"])
+        resumed = self.activate_again("resume", self.snap(), owner_id="new-owner", takeover_ref="synthetic:owner-stopped",
+                                      approval_ref=state["approval_ref"], approved_at=state["approved_at"])
+        self.assertEqual(resumed["loop"]["id"], legacy_loop["id"])
+        self.assertEqual(resumed["loop"]["cycles"], legacy_loop["cycles"])
+        self.assertEqual(resumed["loop"]["timeframe"], "M15")
+        self.assertEqual(resumed["loop"]["binding_verified_at"], self.state()["last_snapshot"]["as_of"])
+        self.assertEqual(self.state()["policy"], state["policy"])
+        self.assertEqual(self.state()["goal"], state["goal"])
+        self.assertEqual(self.state()["peak"], state["peak"])
+        self.assertEqual(self.call("status")["outstanding_intents"][0]["outcome"]["evidence_ref"], "synthetic:timeout")
+        next_cycle = self.call("cycle", owner_id="new-owner", snapshot=self.snap(), clock=self.clock(), bar=self.bar())
+        self.assertEqual(next_cycle["loop"]["id"], legacy_loop["id"])
+        self.assertEqual(next_cycle["loop"]["cycles"], legacy_loop["cycles"] + 1)
+        self.assertEqual(next_cycle["loop"]["next_cycle_at"], "2026-11-03T20:15:05Z")
 
     def journal_request(self, **changes):
         sample = self.state()["last_snapshot"]
@@ -788,7 +1217,7 @@ class AccountCheckTests(unittest.TestCase):
         after.pop("last_journal")
         self.assertEqual(after, before)
         with closing(sqlite3.connect(self.db)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
 
     def test_display_history_captures_final_accepted_results_not_stale_metrics(self):
         activated = self.start()

@@ -24,7 +24,13 @@ function fixture() {
     metrics: { budget: "250.00", target: "500.000", balance: "100000.00", equity: "100080.05", peak: "100100.00", drawdown: "19.95", remaining_risk: "230.05", account_stop_floor: "99850.00", estimated_goal_gain: "80.00", progress_pct: "16.000", remaining_target: "420.000", remaining_close_costs: "0.05", existing_risk: "20.00", free_margin: "80000.00", final_net: null, final_shortfall: null },
     result: { decision: "within_budget", reason_codes: [], closure_verified: false, required_action: "none", last_verified_at: OBSERVED },
     stops: { loss_latched_at: null, target_latched_at: null, target_trigger_gain: null, closure_verified: false },
-    loop: { id: "loop-1", status: "active", cycles: 2, timeframe: "M15", last_cycle_at: OBSERVED, next_cycle_at: "2026-11-04T12:15:05Z", max_gap_seconds: 901, end_reason: null },
+    loop: { id: "loop-1", status: "active", cycles: 2, timeframe: "M15", last_cycle_at: OBSERVED,
+      next_cycle_at: "2026-11-04T12:15:05Z", next_latch_check_at: "2026-11-04T12:05:02Z",
+      next_wake_at: "2026-11-04T12:05:02Z", wake_reason: "latch_check", max_gap_seconds: 901, end_reason: null,
+      policy_id: "policy-a", goal_id: "goal-a", binding_verified_at: OBSERVED,
+      last_observation_at: OBSERVED, last_observation_received_at: "2026-11-04T12:00:02Z", observation_age_seconds: 20,
+      observation_gap_seconds: 300, max_observation_gap_seconds: 600, max_observation_gap_at: OBSERVED,
+      wake_overdue_seconds: 0, execution: "unverified" },
     exposure: { positions_count: 1, orders_count: 1, entry_orders_count: 1, protective_orders_count: 0 },
     pending_orders: [{ ticket: "00009007199254740993", symbol: "SYNTH", kind: "entry", protected: true, risk: "20.00", position_ticket: null,
       details: { order_type: "buy_limit", side: "buy", volume_initial: "0.20", volume_remaining: "0.10", volume_unit: "lots", entry_price: "1.01001", stop_limit_price: null, stop_loss: "0.99001", take_profit: null, placed_at: OBSERVED, expires_at: null, ownership: "manual", unset_fields: ["stop_limit_price", "take_profit", "expires_at"] } }],
@@ -500,6 +506,124 @@ test("configured rendering keeps malicious strings as inert text and canonical v
   assert.match(doc.getElementById("loop-status").textContent, /recorded only/);
   assert.doesNotMatch(doc.getElementById("orders-list").textContent, /request-001/);
   assert.match(doc.getElementById("intents-list").textContent, /request-001/);
+});
+
+test("loop labels separate candle timing, earlier account wakes and observation gaps", async (context) => {
+  const payload = fixture();
+  const { doc, controller } = setup(context, async () => response(payload));
+  await controller.request();
+  assert.equal(doc.getElementById("loop-next").dateTime, "2026-11-04T12:15:05Z");
+  assert.equal(doc.getElementById("loop-latch-next").dateTime, "2026-11-04T12:05:02Z");
+  assert.equal(doc.getElementById("loop-wake").dateTime, "2026-11-04T12:05:02Z");
+  assert.equal(doc.getElementById("loop-wake-reason").textContent, "Account-only limit check");
+  assert.equal(doc.getElementById("loop-overdue").textContent, "Not overdue");
+  assert.equal(doc.getElementById("loop-gap").textContent, "15m 1s");
+  assert.equal(doc.getElementById("loop-observation-gap").textContent, "5m 0s");
+  assert.equal(doc.getElementById("loop-max-observation-gap").textContent, "10m 0s");
+  assert.equal(doc.getElementById("loop-observation").dateTime, OBSERVED);
+  assert.equal(doc.getElementById("loop-observation-received").dateTime, "2026-11-04T12:00:02Z");
+  assert.equal(doc.getElementById("loop-observation-age").textContent, "20s");
+  assert.equal(doc.getElementById("loop-policy").textContent, "policy-a");
+  assert.equal(doc.getElementById("loop-goal").textContent, "goal-a");
+  assert.equal(doc.getElementById("loop-binding").dateTime, OBSERVED);
+  assert.match(html, /Largest recorded cycle spacing/);
+  assert.match(html, /Largest source-observation gap/);
+  assert.doesNotMatch(html, /Largest recorded gap|unwatched account gap/i);
+  assert.match(html, /Wake overdue at API read/);
+  assert.match(html, /Source age at API read/);
+  assert.match(html, /not scheduled or executed waits/);
+  assert.match(html, /browser refresh or healthy local viewer does not verify agent execution/);
+  payload.loop.next_cycle_at = null;
+  for (const [reason, label] of Object.entries({ candle: "Candle check", bar_retry: "Candle data retry",
+    clock_refresh: "Broker timing refresh", market_closed: "Closed-market poll", closure: "Closure / reconciliation" })) {
+    payload.loop.wake_reason = reason;
+    await controller.request();
+    assert.equal(doc.getElementById("loop-wake-reason").textContent, label);
+  }
+  assert.equal(doc.getElementById("loop-next").textContent, "Unavailable");
+  assert.equal(doc.getElementById("loop-next").getAttribute("datetime"), null);
+  assert.equal(doc.getElementById("loop-wake").dateTime, payload.loop.next_wake_at);
+});
+
+test("active, closing and closed financial loops never verify current execution", async (context) => {
+  const payload = fixture();
+  const { doc, controller } = setup(context, async () => response(payload));
+  for (const status of ["active", "closing", "closed"]) {
+    payload.loop.status = status;
+    payload.loop.execution = "running";
+    if (status !== "active") {
+      payload.loop.end_reason = "target_latch";
+      payload.loop.next_cycle_at = null;
+      payload.loop.next_latch_check_at = null;
+      payload.loop.wake_reason = status === "closing" ? "closure" : null;
+      if (status === "closed") {
+        payload.loop.next_wake_at = null;
+        payload.loop.wake_overdue_seconds = null;
+      }
+    }
+    await controller.request();
+    assert.equal(doc.getElementById("loop-status").textContent, `${status} (recorded only)`);
+    assert.equal(doc.getElementById("loop-execution").textContent, "Unverified");
+    assert.equal(doc.getElementById("canonical-state").textContent, "Within budget at last check");
+    assert.match(doc.getElementById("closure-state").textContent, /No verified account closure/);
+  }
+  assert.equal(doc.getElementById("loop-wake").textContent, "Unavailable");
+  assert.equal(doc.getElementById("loop-wake-reason").textContent, "Unavailable");
+  assert.equal(doc.getElementById("loop-overdue").textContent, "Unavailable");
+  assert.equal(doc.getElementById("loop-end").textContent, "target latch");
+});
+
+test("legacy and malformed loop telemetry stays unavailable, not zero or cycle-derived", async (context) => {
+  const payload = fixture();
+  payload.loop = { id: "legacy-loop", status: "active", cycles: 3, timeframe: "M15",
+    last_cycle_at: OBSERVED, next_cycle_at: "2026-11-04T12:15:05Z", max_gap_seconds: 901, end_reason: null };
+  const { doc, controller } = setup(context, async () => response(payload));
+  await controller.request();
+  assert.equal(doc.getElementById("loop-cycles").textContent, "3");
+  assert.equal(doc.getElementById("loop-gap").textContent, "15m 1s");
+  for (const id of ["loop-policy", "loop-goal", "loop-binding", "loop-latch-next", "loop-wake", "loop-wake-reason",
+    "loop-observation", "loop-observation-received", "loop-observation-age", "loop-observation-gap",
+    "loop-max-observation-gap", "loop-max-observation-gap-at", "loop-overdue"]) {
+    assert.equal(doc.getElementById(id).textContent, "Unavailable", id);
+  }
+  Object.assign(payload.loop, { observation_age_seconds: "0", observation_gap_seconds: -1,
+    max_observation_gap_seconds: Infinity, wake_overdue_seconds: false, wake_reason: {} });
+  await controller.request();
+  for (const id of ["loop-observation-age", "loop-observation-gap", "loop-max-observation-gap", "loop-overdue", "loop-wake-reason"]) {
+    assert.equal(doc.getElementById(id).textContent, "Unavailable", id);
+  }
+  payload.loop = null;
+  await controller.request();
+  assert.equal(doc.getElementById("loop-status").textContent, "No loop record available");
+  assert.equal(doc.getElementById("loop-execution").textContent, "Unverified");
+});
+
+test("a journal revision and browser read leave loop evidence unchanged while source ages", async (context) => {
+  let now = NOW;
+  const payload = fixture();
+  const original = structuredClone(payload.loop);
+  const { doc, controller } = setup(context, async () => response(payload), () => now);
+  await controller.request();
+  now += 600000;
+  payload.revision += 1;
+  payload.generated_at = new Date(now).toISOString();
+  payload.latest_journal.recorded_at = payload.generated_at;
+  payload.latest_journal.summary = "A later explanation, not a new observation";
+  payload.loop.observation_age_seconds = 620;
+  payload.loop.wake_overdue_seconds = 318;
+  await controller.request();
+  assert.equal(doc.getElementById("source-time").dateTime, OBSERVED);
+  assert.equal(doc.getElementById("loop-observation").dateTime, original.last_observation_at);
+  assert.equal(doc.getElementById("loop-observation-received").dateTime, original.last_observation_received_at);
+  assert.equal(doc.getElementById("loop-last").dateTime, original.last_cycle_at);
+  assert.equal(doc.getElementById("loop-cycles").textContent, String(original.cycles));
+  assert.equal(doc.getElementById("loop-wake").dateTime, original.next_wake_at);
+  assert.equal(doc.getElementById("loop-gap").textContent, "15m 1s");
+  assert.equal(doc.getElementById("loop-observation-gap").textContent, "5m 0s");
+  assert.equal(doc.getElementById("loop-observation-age").textContent, "10m 20s");
+  assert.equal(doc.getElementById("loop-overdue").textContent, "5m 18s");
+  assert.equal(doc.getElementById("loop-execution").textContent, "Unverified");
+  assert.equal(doc.getElementById("source-badge").textContent, "Stale observation");
 });
 
 test("SVG visibility updates the hidden attribute, not an unsupported property", async (context) => {

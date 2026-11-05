@@ -307,14 +307,36 @@ def read_dashboard(db_path=checker.DEFAULT_DB, *, before=None, now=None):
                              "target_trigger_gain": decimal_text(state.get("target_trigger_gain")), "closure_verified": closure}
         loop = state.get("loop")
         if isinstance(loop, dict):
-            gap = loop.get("max_gap_seconds")
+            health = checker.loop_health(state, now)
             response["loop"] = {"id": checker.display_text(loop.get("id"), "loop_id"),
                                 "status": loop.get("status") if loop.get("status") in ("active", "closing", "closed") else None,
                                 "cycles": loop.get("cycles") if type(loop.get("cycles")) is int else None,
                                 "timeframe": loop.get("timeframe") if loop.get("timeframe") in checker.PERIODS else None,
                                 "last_cycle_at": timestamp(loop.get("last_cycle_at")), "next_cycle_at": timestamp(loop.get("next_cycle_at")),
-                                "max_gap_seconds": gap if type(gap) in (int, float) and math.isfinite(gap) and gap >= 0 else None,
-                                "end_reason": loop.get("end_reason") if loop.get("end_reason") in ("loss_latch", "target_latch") else None}
+                                "end_reason": loop.get("end_reason") if loop.get("end_reason") in ("loss_latch", "target_latch") else None,
+                                "wake_reason": loop.get("wake_reason") if loop.get("wake_reason") in ("candle", "bar_retry", "clock_refresh", "market_closed", "latch_check", "closure") else None,
+                                "execution": "unverified"}
+            for field in ("policy_id", "goal_id"):
+                value = loop.get(field)
+                try:
+                    response["loop"][field] = checker.display_text(value, "loop_" + field) if value is not None else None
+                except checker.CheckError:
+                    response["loop"][field] = None
+                    warnings.add("Some loop metadata is unavailable; execution is not verified.")
+            for source, fields in ((loop, ("binding_verified_at", "next_latch_check_at", "next_wake_at")),
+                                   (health, ("last_observation_at", "last_observation_received_at", "max_observation_gap_at"))):
+                for field in fields:
+                    try:
+                        response["loop"][field] = timestamp(source.get(field))
+                    except checker.CheckError:
+                        response["loop"][field] = None
+                        warnings.add("Some loop timing is unavailable; execution is not verified.")
+            for source, fields in ((loop, ("max_gap_seconds",)),
+                                   (health, ("observation_age_seconds", "observation_gap_seconds",
+                                             "max_observation_gap_seconds", "wake_overdue_seconds"))):
+                for field in fields:
+                    value = source.get(field)
+                    response["loop"][field] = value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
         response["latest_journal"] = journal_summary(state.get("last_journal"), state, warnings)
         response["pending_orders"] = pending_view(state, response["latest_journal"], warnings)
         orders = response["pending_orders"]

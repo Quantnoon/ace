@@ -1,6 +1,23 @@
 # Changelog
 
-## [Unreleased]
+## [1.6.1] - 2026-11-05
+
+### Changed
+
+- The first named-account approval now covers immediate autonomous looping: activate, fresh first `cycle`, management/entries and reconciliation, source-bound journal, consume revision, compact progress and actual wait/read continuation. No separate keep-going menu, routine per-action approval or discretionary final reply after an unfinished batch/quiet cycle.
+- Clarify financial `active`/`closing`/`closed` separately from task execution. Capital-first original authority, explicit bounded/read-only contexts, user stops, actual permissions and host limits remain binding; no continuous guard or automatic future goal is introduced.
+- SQLite schema 3 explicitly reads versions 1/2/3 and upgrades on the next authorized write. Preserve approvals, monetary history, latches, intents, reports and version-1 display/journal envelopes; read-only loads and journal-first upgrades do not initialize/rebind loop metadata. Legacy loop binding requires verified existing-authority resume, not another routine approval.
+
+### Added
+
+- Verified per-symbol closed-bar and broker-clock evidence, approved-timeframe cadence, separate candle/risk/earliest wake deadlines and bounded missing-data/closed-market retry plans. Cycle counts represent unique accepted observations, not candles or trades.
+- Cached read-only observation health with source/receipt timestamps, age, actual observation gaps and overdue wakes, separate from cycle spacing and explicitly unverified execution. The existing dashboard exposes this evidence without backfill or new authority.
+
+### Fixed
+
+- Unfinished liquidation remains continuable; relevant observations and intent resolution synchronize loop lifecycle. Closed observations preserve session identity, late exposure reopens closure work, and approved goal/policy replacement archives the prior loop.
+- Snapshot replays and invalid/missing/regressing bars cannot fabricate activity or candle progress. Timing failures preserve accepted financial observations/latches; failed MCP reads differ from processed helper requests that may consume revisions.
+- Journal results preserve the operational result, loop/deadlines and source age while advancing only reporting revision/state; missing continuation fields or viewer health never mean execution or completion.
 
 ## [1.6.0] - 2026-11-05
 

@@ -148,15 +148,29 @@
               <div><dt>Observed adjusted peak</dt><dd id="observed-peak" class="numeric">Unavailable</dd></div>
               <div><dt>Free margin</dt><dd id="free-margin" class="numeric">Unavailable</dd></div>
               <div><dt>Policy started</dt><dd><time id="policy-start">Unavailable</time></dd></div>
-              <div><dt>Loop status, recorded</dt><dd id="loop-status">Unavailable</dd></div>
+              <div><dt>Financial loop status, recorded</dt><dd id="loop-status">Unavailable</dd></div>
+              <div><dt>Current execution</dt><dd id="loop-execution">Unverified</dd></div>
+              <div><dt>Loop policy ID</dt><dd id="loop-policy" class="numeric">Unavailable</dd></div>
+              <div><dt>Loop goal ID</dt><dd id="loop-goal" class="numeric">Unavailable</dd></div>
+              <div><dt>Loop binding verified from</dt><dd><time id="loop-binding">Unavailable</time></dd></div>
               <div><dt>Recorded cycles</dt><dd id="loop-cycles" class="numeric">Unavailable</dd></div>
               <div><dt>Entry timeframe</dt><dd id="loop-timeframe">Unavailable</dd></div>
               <div><dt>Last recorded cycle</dt><dd><time id="loop-last">Unavailable</time></dd></div>
-              <div><dt>Next recorded cycle</dt><dd><time id="loop-next">Unavailable</time></dd></div>
-              <div><dt>Largest recorded gap</dt><dd id="loop-gap">Unavailable</dd></div>
+              <div><dt>Next candle check, planned</dt><dd><time id="loop-next">Unavailable</time></dd></div>
+              <div><dt>Next account-only check, planned</dt><dd><time id="loop-latch-next">Unavailable</time></dd></div>
+              <div><dt>Next wake, planned</dt><dd><time id="loop-wake">Unavailable</time></dd></div>
+              <div><dt>Recorded wake reason</dt><dd id="loop-wake-reason">Unavailable</dd></div>
+              <div><dt>Wake overdue at API read</dt><dd id="loop-overdue">Unavailable</dd></div>
+              <div><dt>Largest recorded cycle spacing</dt><dd id="loop-gap">Unavailable</dd></div>
+              <div><dt>Account source observed</dt><dd><time id="loop-observation">Unavailable</time></dd></div>
+              <div><dt>Observation received</dt><dd><time id="loop-observation-received">Unavailable</time></dd></div>
+              <div><dt>Source age at API read</dt><dd id="loop-observation-age">Unavailable</dd></div>
+              <div><dt>Latest source-observation gap</dt><dd id="loop-observation-gap">Unavailable</dd></div>
+              <div><dt>Largest source-observation gap</dt><dd id="loop-max-observation-gap">Unavailable</dd></div>
+              <div><dt>Largest gap source time</dt><dd><time id="loop-max-observation-gap-at">Unavailable</time></dd></div>
               <div><dt>Recorded end reason</dt><dd id="loop-end">Unavailable</dd></div>
             </dl>
-            <p class="section-note">A recorded loop is not proof that the agent is executing now or that MCP is connected.</p>
+            <p class="section-note">Cycle spacing is not an account-observation gap. Source gaps compare accepted observation timestamps, not proven outages. Deadlines are recorded plans, not scheduled or executed waits. A loop record, overdue wake, saved report, browser refresh or healthy local viewer does not verify agent execution or an MCP connection. Earlier legacy binding and missing gap history remain unverified.</p>
           </details>
         </aside>
       </div>

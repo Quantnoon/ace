@@ -15,7 +15,7 @@ import uuid
 
 
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "ace_state.sqlite3"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 COMMANDS = ("draft", "activate", "check", "cycle", "prepare", "resolve", "journal", "status")
 UNRESOLVED = ("prepared", "unknown")
 DISPLAY_VERSION = 1
@@ -85,27 +85,6 @@ def period_minutes(value):
     if name not in PERIODS:
         raise CheckError("invalid_timeframe")
     return PERIODS[name]
-
-
-def next_boundary(now, timeframe, buffer_seconds=5):
-    """Next entry-timeframe candle boundary in UTC, plus a settle buffer."""
-    if type(buffer_seconds) is not int or not 0 <= buffer_seconds <= 60:
-        raise CheckError("invalid_buffer_seconds")
-    base = datetime(1970, 1, 1, tzinfo=timezone.utc)
-    if timeframe == "D1":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    elif timeframe == "W1":
-        monday = (now - timedelta(days=now.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0)
-        start = monday + timedelta(days=7)
-    elif timeframe == "MN1":
-        first = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        start = (first + timedelta(days=32)).replace(day=1)
-    else:
-        seconds = PERIODS[timeframe] * 60
-        elapsed = (now - base).total_seconds()
-        start = base + timedelta(seconds=(int(elapsed // seconds) + 1) * seconds)
-    return start + timedelta(seconds=buffer_seconds)
 
 
 def encode(value):
@@ -324,6 +303,24 @@ def observe(state, supplied, now, *, approved_baseline=False):
         errors.append("nonpositive_equity")
     if current["trading_enabled"] is not True:
         errors.append("trading_disabled_or_unknown")
+    if approved_baseline and "observation" not in state:
+        previous = state.get("last_snapshot")
+        state["observation"] = ({"snapshot_id": previous["id"], "as_of": previous["as_of"],
+                                 "received_at": None, "gap_seconds": None, "max_gap_seconds": None,
+                                 "max_gap_at": None} if previous else None)
+    if not approved_baseline:
+        observation = state.get("observation")
+        previous = observation if "observation" in state else state.get("last_snapshot")
+        if previous is None or stamp(current["as_of"], "as_of") > stamp(previous["as_of"], "previous_as_of"):
+            gap = ((stamp(current["as_of"], "as_of") - stamp(observation["as_of"], "previous_as_of")).total_seconds()
+                   if observation and observation.get("received_at") is not None else None)
+            maximum = observation.get("max_gap_seconds") if observation else None
+            maximum_at = observation.get("max_gap_at") if observation else None
+            if gap is not None and (maximum is None or gap > maximum):
+                maximum, maximum_at = gap, current["as_of"]
+            state["observation"] = {"snapshot_id": current["id"], "as_of": current["as_of"],
+                                    "received_at": utc(now), "gap_seconds": gap,
+                                    "max_gap_seconds": maximum, "max_gap_at": maximum_at}
     state["last_snapshot"] = current
     state["last_metrics"] = decode(encode(metrics), exact_numbers=False)
     return metrics, errors
@@ -368,61 +365,202 @@ def report(state, metrics=None, errors=(), outstanding=0):
             if stopped else "none"}
 
 
-def loop_cycle(state, request, now, result):
-    """Record one active decision cycle; only a monetary latch closes the session."""
-    timeframe = request["timeframe"] if "timeframe" in request else state["mandate"].get("entry_timeframe", "M15")
-    period_minutes(timeframe)
-    buffer_seconds = request.get("buffer_seconds", 5)
-    next_cycle_at = utc(next_boundary(now, timeframe, buffer_seconds))
-    market_state = request.get("market_state", "open")
-    if market_state not in MARKET_STATES:
-        raise CheckError("invalid_market_state")
-    bar_time, confirmed = None, None
-    bar = request.get("bar")
-    if bar is not None:
-        if not isinstance(bar, dict):
-            raise CheckError("invalid_bar")
-        bar_time = stamp(bar.get("open_time"), "bar_open_time")
-        if bar_time > now:
-            raise CheckError("future_bar")
-        if not isinstance(bar.get("confirmed"), bool):
-            raise CheckError("invalid_bar_confirmed")
-        confirmed = bar["confirmed"]
+def loop_health(state, now):
+    """Derived evidence only: neither an observation nor a process-liveness probe."""
+    state = state or {}
+    observation = state.get("observation") or {}
+    loop = state.get("loop") or {}
+    source = (observation.get("as_of") if "observation" in state
+              else (state.get("last_snapshot") or {}).get("as_of"))
+    result = {"last_observation_at": source,
+              "last_observation_received_at": observation.get("received_at"),
+              "observation_gap_seconds": observation.get("gap_seconds"),
+              "max_observation_gap_seconds": observation.get("max_gap_seconds"),
+              "max_observation_gap_at": observation.get("max_gap_at"), "execution": "unverified"}
+    for field, when in (("observation_age_seconds", source),
+                        ("wake_overdue_seconds", loop.get("next_wake_at") if loop.get("status") != "closed" else None)):
+        result[field] = None
+        if when is not None:
+            try:
+                age = (now - stamp(when, field)).total_seconds()
+                result[field] = max(0.0, age) if field == "wake_overdue_seconds" or age >= 0 else None
+            except CheckError:
+                pass
+    return result
+
+
+def loop_wake(state, now):
+    """Plan deadlines from verified inputs; never wait, extrapolate bars or dispatch."""
+    loop = state["loop"]
+    loop.update(next_cycle_at=None, next_latch_check_at=None, next_wake_at=None, wake_reason=None)
+    if loop.get("status") == "closed":
+        return
+    if loop.get("status") == "closing":
+        loop.update(next_wake_at=utc(now), wake_reason="closure")
+        return
+    candidates = []
+    interval = state["mandate"].get("latch_check_seconds", 0)
+    received = (state.get("observation") or {}).get("received_at")
+    if interval and received:
+        due = stamp(received, "observation_received_at") + timedelta(seconds=interval)
+        loop["next_latch_check_at"] = utc(due)
+        candidates.append((due, "latch_check"))
+    clock = loop.get("clock")
+    retry = stamp(loop["market_retry_at"], "market_retry_at") if loop.get("market_retry_at") else now
+    if not clock:
+        candidates.append((retry, "clock_refresh"))
+    elif (clock["symbol"] not in state["mandate"]["symbols"]
+          or (now - stamp(clock["as_of"], "clock_as_of")).total_seconds() > state["mandate"]["max_snapshot_age_seconds"]
+          or stamp(clock["next_boundary_at"], "next_boundary_at") <= now):
+        candidates.append((now, "clock_refresh"))
+    else:
+        latest = (loop.get("bar_high_water") or {}).get(clock["symbol"], {})
+        ready = (latest.get("timeframe") == loop["timeframe"]
+                 and latest.get("close_time") == clock["last_boundary_at"])
+        due = stamp(clock["next_boundary_at"] if ready else clock["last_boundary_at"], "candle_boundary")
+        due += timedelta(seconds=loop.get("buffer_seconds", 5))
+        loop["next_cycle_at"] = utc(due)
+        if ready or due > now:
+            candidates.append((due, "candle"))
+        else:
+            reason = "market_closed" if loop.get("closed_boundaries", 0) >= 2 else "bar_retry"
+            candidates.append((retry, reason))
+    due, reason = min(candidates, key=lambda item: item[0])
+    loop.update(next_wake_at=utc(due), wake_reason=reason)
+
+
+def sync_loop(state, result, detail, now):
+    """Converge lifecycle after financial/intent work, without creating a session."""
     loop = state.get("loop")
-    if not isinstance(loop, dict) or loop.get("status") == "closed":
+    if not isinstance(loop, dict):
+        return
+    previous = {key: loop.get(key) for key in ("status", "end_reason", "ended_at")}
+    fresh = result.get("metrics") is not None
+    stopped = state.get("loss_latched_at") or state.get("target_latched_at")
+    if stopped and (fresh or loop.get("status") != "closed"):
+        loop["status"] = "closed" if result["closure_verified"] else "closing"
+        loop["end_reason"] = "loss_latch" if state.get("loss_latched_at") else "target_latch"
+        loop["ended_at"] = (loop.get("ended_at") or utc(now)) if loop["status"] == "closed" else None
+    elif fresh and not stopped:
+        loop.update(status="active", end_reason=None, ended_at=None)
+    if previous != {key: loop.get(key) for key in previous}:
+        detail["previous_loop_lifecycle"] = previous
+    if fresh or loop.get("status") == "closing":
+        loop_wake(state, now)
+    result.update(loop=copy.deepcopy(loop), may_continue=not result.get("closure_verified", False),
+                  loop_health=loop_health(state, now))
+    detail["loop"] = copy.deepcopy(loop)
+
+
+def loop_cycle(state, request, now, result):
+    """Count unique account observations independently of confirmed candle advances."""
+    timeframe = state["mandate"].get("entry_timeframe", "M15")
+    loop = state.get("loop")
+    if not isinstance(loop, dict):
         loop = {"id": "loop-" + str(uuid.uuid4()), "started_at": utc(now), "cycles": 0,
+                "policy_id": state["policy"]["id"], "goal_id": state["goal"]["id"],
+                "binding_verified_at": state["last_snapshot"]["as_of"], "status": "active",
                 "gap_seconds": None, "max_gap_seconds": None, "max_gap_at": None,
                 "missing_bars": 0, "end_reason": None, "ended_at": None,
-                "timeframe": timeframe, "bar_open_time": None, "bar_confirmed": None,
-                "bar_advanced": None, "market_state": market_state}
+                "timeframe": timeframe, "bar_high_water": {}, "market_state": "unknown"}
+        state["loop"] = loop
+    if loop.get("status") == "closed" and result["closure_verified"]:
+        return
+    loop.update(bar_confirmed=False, bar_advanced=False)
+    if (loop.get("policy_id") != state["policy"]["id"] or loop.get("goal_id") != state["goal"]["id"]
+            or not loop.get("binding_verified_at")):
+        raise CheckError("loop_resume_required")
+    current = state["last_snapshot"]
+    if (loop.get("last_cycle_snapshot_id") == current["id"]
+            or (loop.get("last_cycle_as_of") and stamp(current["as_of"], "as_of") <= stamp(loop["last_cycle_as_of"], "last_cycle_as_of"))):
+        raise CheckError("duplicate_cycle_snapshot")
     previous = stamp(loop["last_cycle_at"], "last_cycle_at") if loop.get("last_cycle_at") else None
     gap = None if previous is None else max(0.0, (now - previous).total_seconds())
     loop["gap_seconds"] = gap
     if gap is not None and (loop.get("max_gap_seconds") is None or gap > loop["max_gap_seconds"]):
-        loop["max_gap_seconds"] = gap
-        loop["max_gap_at"] = utc(now)
-    loop["cycles"] = int(loop.get("cycles", 0)) + 1
-    loop["last_cycle_at"] = utc(now)
-    loop["timeframe"] = timeframe
+        loop.update(max_gap_seconds=gap, max_gap_at=utc(now))
+    loop.update(cycles=int(loop.get("cycles", 0)) + 1, last_cycle_at=utc(now),
+                last_cycle_snapshot_id=current["id"], last_cycle_as_of=current["as_of"],
+                clock=None, market_state="unknown", market_retry_at=utc(now + timedelta(seconds=15)))
+    if "timeframe" in request:
+        period_minutes(request["timeframe"])
+        if request["timeframe"] != timeframe:
+            raise CheckError("timeframe_mismatch")
+    buffer_seconds = request.get("buffer_seconds", 5)
+    if type(buffer_seconds) is not int or not 3 <= buffer_seconds <= 5:
+        raise CheckError("invalid_buffer_seconds")
+    loop["buffer_seconds"] = buffer_seconds
+    market_state = request.get("market_state", "unknown")
+    if market_state not in MARKET_STATES:
+        raise CheckError("invalid_market_state")
     loop["market_state"] = market_state
-    if bar_time is not None:
-        previous_bar = stamp(loop["bar_open_time"], "bar_open_time") if loop.get("bar_open_time") else None
-        advanced = previous_bar is None or bar_time > previous_bar
-        loop["bar_open_time"] = utc(bar_time)
-        loop["bar_confirmed"] = confirmed
-        loop["bar_advanced"] = advanced
-        loop["missing_bars"] = 0 if advanced else int(loop.get("missing_bars", 0)) + 1
-    loop["next_cycle_at"] = next_cycle_at
-    if result["loss_latched_at"] or result["target_latched_at"]:
-        loop["end_reason"] = "loss_latch" if result["loss_latched_at"] else "target_latch"
-        loop["status"] = "closed" if result["closure_verified"] else "closing"
-        if loop["status"] == "closed" and not loop.get("ended_at"):
-            loop["ended_at"] = utc(now)
-    else:
-        loop["status"] = "active"
-        loop["end_reason"] = None
-    state["loop"] = loop
-    return loop
+    if market_state != "closed":
+        loop.update(closed_boundaries=0, closed_boundary_at=None, closed_next_boundary_at=None)
+    clock = request.get("clock")
+    if not isinstance(clock, dict):
+        raise CheckError("broker_clock_unavailable")
+    symbol = text(clock.get("symbol"), "clock_symbol")
+    if symbol not in state["mandate"]["symbols"]:
+        raise CheckError("unapproved_clock_symbol")
+    clock = {key: text(clock.get(key), "clock_" + key)
+             for key in ("symbol", "source_ref", "as_of", "last_boundary_at", "next_boundary_at")}
+    clock_time = stamp(clock["as_of"], "clock_as_of")
+    boundary = stamp(clock["last_boundary_at"], "last_boundary_at")
+    following = stamp(clock["next_boundary_at"], "next_boundary_at")
+    observed = stamp(current["as_of"], "as_of")
+    if (not boundary <= clock_time < following or clock_time > observed or following <= now
+            or (now - clock_time).total_seconds() > state["mandate"]["max_snapshot_age_seconds"]):
+        raise CheckError("invalid_or_stale_broker_clock")
+    clock.update(as_of=utc(clock_time), last_boundary_at=utc(boundary), next_boundary_at=utc(following))
+    loop["clock"] = clock
+    latest = loop.setdefault("bar_high_water", {}).get(symbol, {})
+    if latest and stamp(latest["close_time"], "previous_bar_close") > boundary:
+        loop["clock"] = None
+        raise CheckError("regressing_broker_clock")
+    bar = request.get("bar")
+    if bar is not None:
+        if not isinstance(bar, dict):
+            raise CheckError("invalid_bar")
+        opened = stamp(bar.get("open_time"), "bar_open_time")
+        if opened > observed:
+            raise CheckError("future_bar")
+        if type(bar.get("confirmed")) is not bool:
+            raise CheckError("invalid_bar_confirmed")
+        if not all(bar.get(key) for key in ("symbol", "source_ref", "close_time")):
+            raise CheckError("bar_evidence_unavailable")
+        closed = stamp(bar["close_time"], "bar_close_time")
+        text(bar["source_ref"], "bar_source_ref")
+        if bar["symbol"] != symbol or closed <= opened or (bar["confirmed"] and closed > observed):
+            raise CheckError("invalid_bar_clock")
+        loop.update(bar_symbol=symbol, bar_open_time=utc(opened), bar_close_time=utc(closed))
+        settled = observed >= boundary + timedelta(seconds=buffer_seconds)
+        if bar["confirmed"] and closed == boundary and settled:
+            if latest:
+                previous_open = stamp(latest["open_time"], "previous_bar_open")
+                previous_close = stamp(latest["close_time"], "previous_bar_close")
+                if opened < previous_open or closed < previous_close:
+                    raise CheckError("regressing_bar")
+                if (opened == previous_open) != (closed == previous_close):
+                    raise CheckError("conflicting_bar")
+            loop["bar_confirmed"] = True
+            if not latest or (opened > previous_open and closed > previous_close):
+                loop["bar_high_water"][symbol] = {"timeframe": timeframe, "open_time": utc(opened), "close_time": utc(closed)}
+                loop["bar_advanced"] = True
+    latest = loop["bar_high_water"].get(symbol, {})
+    ready = latest.get("close_time") == clock["last_boundary_at"] and latest.get("timeframe") == timeframe
+    if ready:
+        loop.update(missing_bars=0, closed_boundaries=0, closed_boundary_at=None,
+                    closed_next_boundary_at=None, market_retry_at=None)
+    elif observed >= boundary + timedelta(seconds=buffer_seconds):
+        if not loop.get("missing_boundary_at") or boundary > stamp(loop["missing_boundary_at"], "missing_boundary_at"):
+            loop["missing_bars"] = int(loop.get("missing_bars", 0)) + 1
+            loop["missing_boundary_at"] = utc(boundary)
+        if market_state == "closed" and loop.get("closed_boundary_at") != utc(boundary):
+            consecutive = loop.get("closed_next_boundary_at") == utc(boundary)
+            loop.update(closed_boundaries=loop.get("closed_boundaries", 0) + 1 if consecutive else 1,
+                        closed_boundary_at=utc(boundary), closed_next_boundary_at=utc(following))
+        if market_state == "closed" and loop.get("closed_boundaries", 0) >= 2:
+            loop["market_retry_at"] = utc(now + timedelta(minutes=5))
 
 
 def tool_parameters(value):
@@ -459,6 +597,11 @@ def action(value, state, metrics, errors):
     if result["kind"] == "entry":
         if state["loss_latched_at"] or state["target_latched_at"] or errors or metrics is None:
             raise CheckError("entry_blocked")
+        loop = state.get("loop")
+        if loop is not None and (not isinstance(loop, dict) or not loop.get("binding_verified_at")
+                                 or loop.get("policy_id") != state["policy"]["id"]
+                                 or loop.get("goal_id") != state["goal"]["id"]):
+            raise CheckError("loop_resume_required")
         for key in ("broker_checks_passed", "protective_stop_in_request"):
             if value.get(key) is not True:
                 raise CheckError("missing_" + key)
@@ -624,7 +767,7 @@ def display_event(state, result, detail, now):
 
 def load_state(connection):
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if version not in (1, SCHEMA_VERSION):
+    if version not in (1, 2, SCHEMA_VERSION):
         raise CheckError("unsupported_schema")
     row = connection.execute("SELECT revision, payload FROM state WHERE id = 1").fetchone()
     if row is None:
@@ -643,6 +786,11 @@ def load_state(connection):
 
 
 def save_state(connection, revision, state, command, detail, now):
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if version != SCHEMA_VERSION:
+        previous = connection.execute("SELECT payload FROM state WHERE id = 1").fetchone()
+        detail = dict(detail, migration={"from_version": version, "to_version": SCHEMA_VERSION,
+                                        "legacy_loop": decode(previous[0], exact_numbers=False).get("loop") if previous else None})
     serialized = encode(state)
     connection.execute("INSERT INTO state VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision, payload=excluded.payload",
                        (revision, serialized))
@@ -738,6 +886,37 @@ def activate(state, request, now, outstanding):
     state["approval_ref"] = approval_ref
     state["approved_at"] = request["approved_at"]
     state["owner_id"] = request["owner_id"]
+    loop = state.get("loop")
+    if mode in ("start", "new_goal", "replace_policy"):
+        state["loop"] = None
+        if mode == "start":
+            # The approved baseline is not an earlier live observation.
+            state["observation"] = None
+    elif isinstance(loop, dict):
+        if any(loop.get(key) is not None and loop[key] != state[field]["id"]
+               for key, field in (("policy_id", "policy"), ("goal_id", "goal"))):
+            raise CheckError("loop_mandate_mismatch")
+        if mode == "resume" and not loop.get("binding_verified_at"):
+            loop.update(policy_id=state["policy"]["id"], goal_id=state["goal"]["id"],
+                        binding_verified_at=current["as_of"], bar_high_water={}, clock=None,
+                        bar_confirmed=False, bar_advanced=False,
+                        last_cycle_snapshot_id=(previous.get("last_snapshot") or {}).get("id"),
+                        last_cycle_as_of=(previous.get("last_snapshot") or {}).get("as_of"))
+        timeframe = config.get("entry_timeframe", "M15")
+        if loop.get("timeframe") != timeframe:
+            loop.update(timeframe=timeframe, clock=None, bar_high_water={}, bar_open_time=None,
+                        bar_close_time=None, bar_symbol=None, bar_confirmed=False, bar_advanced=False,
+                        missing_bars=0, missing_boundary_at=None, closed_boundaries=0,
+                        closed_boundary_at=None, closed_next_boundary_at=None, market_retry_at=None)
+        if set(previous["mandate"]["symbols"]) != set(config["symbols"]):
+            loop["bar_high_water"] = {symbol: value for symbol, value in loop.get("bar_high_water", {}).items()
+                                      if symbol in config["symbols"]}
+            loop.update(clock=None, market_state="unknown", market_retry_at=None,
+                        missing_bars=0, missing_boundary_at=None, closed_boundaries=0,
+                        closed_boundary_at=None, closed_next_boundary_at=None,
+                        bar_confirmed=False, bar_advanced=False)
+            if loop.get("bar_symbol") not in config["symbols"]:
+                loop.update(bar_symbol=None, bar_open_time=None, bar_close_time=None)
     metrics, errors = observe(state, current, now)
     return report(state, metrics, errors, len(outstanding)), {"previous_state": previous, "mode": mode,
                                           "baseline": baseline if mode not in ("resume", "reauthorize") else None,
@@ -749,7 +928,8 @@ def transact(connection, command, request, now):
     revision, state = load_state(connection)
     if command == "status":
         return {"ok": True, "decision": "cached" if state else "unconfigured",
-                "may_dispatch": False, "revision": revision, "state": state,
+                 "may_dispatch": False, "revision": revision, "state": state,
+                 "loop_health": loop_health(state, now),
                 "outstanding_intents": [{"id": row[0], "action": decode(row[1], exact_numbers=False),
                                          "status": row[2], "outcome": decode(row[3], exact_numbers=False) if row[3] else None}
                                         for row in pending(connection)]}
@@ -876,9 +1056,7 @@ def transact(connection, command, request, now):
                 elif command == "cycle":
                     if metrics is None:
                         raise CheckError("fresh_account_snapshot_required")
-                    loop = loop_cycle(state, request, now, result)
-                    result.update(may_continue=loop["status"] == "active", loop=loop)
-                    detail["loop"] = loop
+                    loop_cycle(state, request, now, result)
                 elif command != "check":
                     raise CheckError("unknown_command")
             except CheckError as error:
@@ -887,9 +1065,9 @@ def transact(connection, command, request, now):
                 result = report(state, metrics, errors, len(pending(connection)))
                 if command == "cycle":
                     result.update(loop=state.get("loop"),
-                                  may_continue=not (state.get("loss_latched_at")
-                                                    or state.get("target_latched_at")))
+                                   may_continue=not result["closure_verified"])
                 detail["reason_codes"] = errors
+        sync_loop(state, result, detail, now)
     state["last_result"] = {key: value for key, value in result.items() if key not in ("intent", "may_dispatch")}
     detail["display"] = display_event(state, result, detail, now)
     save_state(connection, revision + 1, state, command, detail, now)

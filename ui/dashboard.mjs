@@ -530,11 +530,27 @@ class DashboardView {
     this.money("final-shortfall", status.closureVerified ? metrics.final_shortfall : null);
     this.time("policy-start", data.policy?.started_at);
     this.text("loop-status", data.loop ? `${codeLabel(data.loop.status)} (recorded only)` : "No loop record available");
+    this.text("loop-execution", "Unverified");
+    this.text("loop-policy", text(data.loop?.policy_id));
+    this.text("loop-goal", text(data.loop?.goal_id));
+    this.time("loop-binding", data.loop?.binding_verified_at);
     this.text("loop-cycles", formatCount(data.loop?.cycles));
     this.text("loop-timeframe", text(data.loop?.timeframe));
     this.time("loop-last", data.loop?.last_cycle_at);
     this.time("loop-next", data.loop?.next_cycle_at);
+    this.time("loop-latch-next", data.loop?.next_latch_check_at);
+    this.time("loop-wake", data.loop?.next_wake_at);
+    const wakeReasons = { candle: "Candle check", bar_retry: "Candle data retry", clock_refresh: "Broker timing refresh",
+      market_closed: "Closed-market poll", latch_check: "Account-only limit check", closure: "Closure / reconciliation" };
+    this.text("loop-wake-reason", Object.hasOwn(wakeReasons, data.loop?.wake_reason) ? wakeReasons[data.loop.wake_reason] : UNAVAILABLE);
+    this.text("loop-overdue", data.loop?.wake_overdue_seconds === 0 ? "Not overdue" : duration(data.loop?.wake_overdue_seconds));
     this.text("loop-gap", duration(data.loop?.max_gap_seconds));
+    this.time("loop-observation", data.loop?.last_observation_at);
+    this.time("loop-observation-received", data.loop?.last_observation_received_at);
+    this.text("loop-observation-age", duration(data.loop?.observation_age_seconds));
+    this.text("loop-observation-gap", duration(data.loop?.observation_gap_seconds));
+    this.text("loop-max-observation-gap", duration(data.loop?.max_observation_gap_seconds));
+    this.time("loop-max-observation-gap-at", data.loop?.max_observation_gap_at);
     this.text("loop-end", codeLabel(data.loop?.end_reason));
     this.renderJournal(data);
     this.renderChart(state.progress);
