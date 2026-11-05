@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.2] - 2026-11-05
+
+### Changed
+
+- Replace the sampled target history chart and table with an animated current-progress donut. Essential target values stay visible, accounting details move into a disclosure, exact signed percentages remain visible below zero and above 100, and reduced-motion preferences disable the transition.
+- Account activity now starts with the newest five events. The on-demand View all control reads every older page sequentially through the existing bounded cursor API, remains scoped to the current account and goal, and can collapse back to five rows.
+- Move unresolved local action requests below account activity while retaining their distinction from broker orders.
+
+### Removed
+
+- Remove the visible Broker pending orders section, filter, and navigation link. Canonical order data, risk counts, closure checks, checkpoint state, and read-only API compatibility are unchanged.
+
 ## [1.6.1] - 2026-11-05
 
 ### Changed

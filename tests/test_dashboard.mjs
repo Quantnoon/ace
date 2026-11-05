@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   isDecimal, decimalSign, formatDecimal, formatMoney, formatPercent, formatCount,
-  formatTimestamp, sourceFreshness, scopeKey, approvedAmounts, canonicalStatus,
-  intentStatus, journalForScope, orderDetail, ordersForFilter, mergeActivity,
-  isDashboardResponse, mergeDashboardPage, chartGeometry, pollDelay, DashboardController,
+  formatTimestamp, sourceFreshness, scopeKey, approvedAmounts, canonicalStatus, progressFill,
+  intentStatus, journalForScope, mergeActivity, isDashboardResponse, mergeDashboardPage,
+  pollDelay, ACTIVITY_PREVIEW_SIZE, DashboardController,
 } from "../ui/dashboard.mjs";
 
 const NOW = Date.parse("2026-11-04T12:00:20Z");
@@ -211,30 +211,17 @@ test("journal metadata must bind to the current goal and remain explanation only
   assert.equal(journalForScope(data, { ...data.latest_journal, summary: malicious }).summary, malicious);
 });
 
-test("pending orders distinguish unknown, empty, manual, entry and protective", () => {
-  assert.equal(ordersForFilter(null), null);
-  assert.deepEqual(ordersForFilter([]), []);
-  const orders = fixture().pending_orders;
-  orders.push({ ...orders[0], ticket: "00002", kind: "protective" });
-  orders.push({ ...orders[0], ticket: "00003", kind: null });
-  assert.equal(ordersForFilter(orders).length, 3);
-  assert.equal(ordersForFilter(orders, "entry")[0].details.ownership, "manual");
-  assert.deepEqual(ordersForFilter(orders, "protective").map((order) => order.ticket), ["00002"]);
-});
-
-test("order enrichment null is unavailable and explicit unset is not set", () => {
-  const order = fixture().pending_orders[0];
-  assert.equal(orderDetail({ ...order, details: null }, "stop_loss"), "Unavailable");
-  assert.equal(orderDetail(order, "expires_at"), "Not set");
-  assert.equal(orderDetail(order, "stop_limit_price"), "Not set");
-  assert.equal(orderDetail(order, "volume_remaining"), "0.10 lots");
-  assert.equal(orderDetail(order, "stop_loss"), "0.99001");
-  order.details.unset_fields = [];
-  assert.equal(orderDetail(order, "expires_at"), "Unavailable");
-  order.details.unset_fields = ["stop_loss"];
-  assert.equal(orderDetail(order, "stop_loss"), "Unavailable");
-  order.details.volume_unit = "money";
-  assert.equal(orderDetail(order, "volume_remaining"), "Unavailable");
+test("donut geometry bounds only the visual fill", () => {
+  assert.equal(progressFill(null), null);
+  assert.equal(progressFill("-110.50"), 0);
+  assert.equal(progressFill("-0.000000000001"), 0);
+  assert.equal(progressFill("0"), 0);
+  assert.equal(progressFill("16.000"), 16);
+  assert.equal(progressFill("100"), 100);
+  assert.equal(progressFill("124.000000000001"), 100);
+  assert.equal(progressFill("900719925474099300000000"), 100);
+  assert.ok(progressFill("99.99999999999999999999") < 100);
+  assert.equal(ACTIVITY_PREVIEW_SIZE, 5);
 });
 
 test("activity deduplicates by safe event ID without coercing unknown lists to empty", () => {
@@ -243,18 +230,16 @@ test("activity deduplicates by safe event ID without coercing unknown lists to e
   assert.deepEqual(mergeActivity([{ id: 4, decision: "old" }, { id: 3 }], [{ id: 4, decision: "new" }, { id: 5 }, null, { id: "2" }, { id: -1 }]), [{ id: 5 }, { id: 4, decision: "new" }, { id: 3 }]);
 });
 
-test("older pages append once and update the summary without replacing recent chart data", () => {
+test("older pages append once and update the current summary", () => {
   const first = fixture();
   let state = mergeDashboardPage(null, first);
   const older = fixture();
   older.revision = 13;
   older.metrics.estimated_goal_gain = "85.00";
   older.activity = { items: [{ ...first.activity.items[0], id: 11 }], next_cursor: 11 };
-  older.progress.points = [{ ...older.progress.points[0], gain: "1.00" }];
   state = mergeDashboardPage(state, older, { before: 12 });
   assert.deepEqual(state.activity.map((item) => item.id), [12, 11]);
   assert.equal(state.data.metrics.estimated_goal_gain, "85.00");
-  assert.equal(state.progress, first.progress);
   assert.equal(state.cursor, 11);
   const newer = fixture();
   newer.revision = 14;
@@ -272,7 +257,6 @@ test("account or goal changes during pagination discard old pages and request cu
   const state = mergeDashboardPage(previous, next, { before: 12, requestScope: previous.scope });
   assert.equal(state.data.scope.goal_id, "goal-b");
   assert.equal(state.activity, null);
-  assert.equal(state.progress, null);
   assert.equal(state.needsRefresh, true);
   const refreshed = mergeDashboardPage(state, next);
   assert.deepEqual(refreshed.activity.map((item) => item.id), [30]);
@@ -296,7 +280,6 @@ test("an unconfigured response after load clears current account/history state",
   assert.equal(state.data.status, "unconfigured");
   assert.equal(state.unconfiguredAfterLoad, true);
   assert.equal(state.activity, null);
-  assert.equal(state.progress, null);
   assert.equal(state.cursor, null);
 });
 
@@ -320,45 +303,6 @@ test("response validation rejects error payloads, unknown API versions and unsaf
   assert.equal(isDashboardResponse({ ok: false, status: "unavailable", error: "reader_busy", generated_at: GENERATED }), false);
 });
 
-test("chart uses only supplied normalized coordinates and retains exact source values", () => {
-  const progress = fixture().progress;
-  progress.points[0] = { ...progress.points[0], gain: "-0.000000000001", pct: "-0.0000000000002", x: 0.25, y: 0.9 };
-  const geometry = chartGeometry(progress);
-  assert.equal(geometry.samples[0].x, 230);
-  assert.equal(geometry.samples[0].y, 182);
-  assert.equal(geometry.samples[0].point.gain, "-0.000000000001");
-  assert.equal(geometry.targetY, 20);
-  assert.equal(geometry.zeroY, 200);
-  progress.points[0].pct = "150.000000000001";
-  assert.equal(chartGeometry(progress).samples[0].y, 182);
-});
-
-test("chart line segments break at gaps and unknown monetary values", () => {
-  const progress = fixture().progress;
-  const point = progress.points[0];
-  progress.points = [
-    { ...point, x: 0 }, { ...point, x: 0.1 },
-    { ...point, x: 0.2, gap_before: true }, { ...point, x: 0.3, gain: null },
-    { ...point, x: 0.4 }, { ...point, x: 0.5, y: null }, { ...point, x: 1, legacy: true },
-  ];
-  const geometry = chartGeometry(progress);
-  assert.deepEqual(geometry.segments.map((segment) => segment.length), [2, 1, 1, 1]);
-  assert.deepEqual(geometry.gaps, [194]);
-  assert.equal(geometry.samples.length, 5);
-  assert.equal(geometry.samples.at(-1).point.legacy, true);
-});
-
-test("malformed chart coordinates are never coerced into numbers or zero", () => {
-  const progress = fixture().progress;
-  const point = progress.points[0];
-  progress.points = [null, { ...point, x: "0.2" }, { ...point, x: NaN }, { ...point, y: -0.1 }, { ...point, y: 1.01 }];
-  progress.target_y = "0";
-  assert.equal(chartGeometry(progress).samples.length, 0);
-  assert.equal(chartGeometry(progress).targetY, null);
-  assert.equal(chartGeometry(null).points, null);
-  assert.deepEqual(chartGeometry({ points: [] }).points, []);
-});
-
 test("poll timing is sequential-friendly, slows hidden tabs and bounds backoff", () => {
   assert.deepEqual([0, 1, 2, 3, 99].map((failures) => pollDelay(false, failures)), [5000, 10000, 20000, 30000, 30000]);
   assert.equal(pollDelay(true, 0), 30000);
@@ -374,6 +318,7 @@ class FakeNode {
     this.children = [];
     this.parentNode = null;
     this.attributes = new Map();
+    this.attributeWrites = new Map();
     this.dataset = {};
     this.listeners = new Map();
     this._text = "";
@@ -400,6 +345,7 @@ class FakeNode {
   remove() { if (this.parentNode) { this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1); this.parentNode = null; } }
   setAttribute(key, value) {
     this.attributes.set(key, value);
+    this.attributeWrites.set(key, (this.attributeWrites.get(key) ?? 0) + 1);
     if (key === "hidden") this.hidden = true;
     if (key.startsWith("data-")) this.dataset[key.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = value;
   }
@@ -459,9 +405,15 @@ test("markup and code use local assets, safe text APIs and accessible alternativ
   assert.match(html, /src="\/assets\/logo\.png"/);
   assert.match(html, /href="\/dashboard\.css"/);
   assert.match(html, /type="module" src="\/dashboard\.mjs"/);
-  assert.match(html, /<svg[^>]+aria-labelledby=/);
-  assert.match(html, /<table class="observation-table">/);
-  assert.match(html, /<caption>/);
+  assert.match(html, /id="target-progress"[^>]+role="progressbar"/);
+  assert.match(html, /id="target-progress-ring"/);
+  assert.match(html, /id="progress-exact"/);
+  assert.match(html, /id="activity-toggle"[^>]+aria-controls="activity-list"[^>]+aria-expanded="false"/);
+  assert.match(html, /<h2 id="intents-heading">Unresolved requests<\/h2>/);
+  assert.ok(html.indexOf('id="intents-heading"') > html.indexOf('id="activity-heading"'));
+  assert.doesNotMatch(html, /id="orders"|id="order-filter"|id="orders-list"|>Orders<|observation-table|progress-chart/);
+  assert.match(css, /stroke-dashoffset 900ms/);
+  assert.match(css, /@media \(max-width: 920px\)[\s\S]*?\.overview-grid \{ grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /prefers-reduced-motion/);
   assert.match(css, /:focus-visible/);
 });
@@ -487,7 +439,6 @@ test("configured rendering keeps malicious strings as inert text and canonical v
   const malicious = '<img src="x" onerror="alert(1)">';
   payload.latest_journal.summary = malicious;
   payload.latest_journal.source_refs = ["javascript:alert(1)", "../../private"];
-  payload.pending_orders[0].symbol = "<script>symbol</script>";
   payload.metrics.estimated_goal_gain = "-0.000000000001";
   payload.metrics.progress_pct = "-0.0000000000002";
   const { doc, controller } = setup(context, async () => response(payload));
@@ -496,16 +447,284 @@ test("configured rendering keeps malicious strings as inert text and canonical v
   assert.equal(doc.getElementById("journal-summary").textContent, malicious);
   assert.equal(doc.getElementById("journal-summary").children.length, 0);
   assert.match(doc.getElementById("journal-details").textContent, /javascript:alert\(1\)/);
-  assert.match(doc.getElementById("orders-list").textContent, /<script>symbol<\/script>/);
-  assert.match(doc.getElementById("orders-list").textContent, /00009007199254740993/);
   assert.equal(doc.getElementById("account-login").textContent, "000042");
   assert.equal(doc.getElementById("approved-target").textContent, "500.000 USD cents");
   assert.equal(doc.getElementById("net-gain").textContent, "-0.000000000001 USD cents");
   assert.equal(doc.getElementById("net-gain").dataset.tone, "danger");
+  assert.equal(doc.getElementById("progress-pct").textContent, "<0.0001% loss");
+  assert.equal(doc.getElementById("target-progress").getAttribute("aria-valuenow"), "0");
+  assert.match(doc.getElementById("target-progress").getAttribute("aria-valuetext"), /-0\.0000000000002%/);
+  assert.equal(doc.getElementById("target-progress-ring").getAttribute("stroke-dashoffset"), "100");
+  assert.equal(doc.getElementById("pending-count").textContent, "1");
   assert.equal(doc.getElementById("canonical-state").textContent, "Within budget at last check");
   assert.match(doc.getElementById("loop-status").textContent, /recorded only/);
-  assert.doesNotMatch(doc.getElementById("orders-list").textContent, /request-001/);
   assert.match(doc.getElementById("intents-list").textContent, /request-001/);
+});
+
+test("target donut animates only changed saved progress and keeps exact semantics", async (context) => {
+  const payload = fixture();
+  const { doc, controller } = setup(context, async () => response(payload));
+  await controller.request();
+  const progress = doc.getElementById("target-progress");
+  const ring = doc.getElementById("target-progress-ring");
+  assert.equal(doc.getElementById("progress-pct").textContent, "+16.000%");
+  assert.equal(doc.getElementById("progress-exact").textContent, "+16.000%");
+  assert.equal(progress.getAttribute("aria-valuenow"), "16");
+  assert.equal(progress.getAttribute("aria-valuetext"), "+16.000% toward the approved target");
+  assert.equal(ring.getAttribute("stroke-dashoffset"), "84");
+  const writes = ring.attributeWrites.get("stroke-dashoffset");
+  payload.revision += 1;
+  await controller.request();
+  assert.equal(ring.attributeWrites.get("stroke-dashoffset"), writes);
+  payload.revision += 1;
+  payload.metrics.progress_pct = "124.000000000001";
+  await controller.request();
+  assert.equal(doc.getElementById("progress-pct").textContent, "~+124.0000%");
+  assert.equal(doc.getElementById("progress-exact").textContent, "+124.000000000001%");
+  assert.equal(progress.getAttribute("aria-valuenow"), "100");
+  assert.match(progress.getAttribute("aria-valuetext"), /\+124\.000000000001%/);
+  assert.equal(ring.getAttribute("stroke-dashoffset"), "0");
+  assert.equal(doc.getElementById("canonical-state").textContent, "Within budget at last check");
+  payload.revision += 1;
+  payload.metrics.progress_pct = null;
+  await controller.request();
+  assert.equal(doc.getElementById("progress-pct").textContent, "Unavailable");
+  assert.equal(doc.getElementById("progress-exact").textContent, "Unavailable");
+  assert.equal(progress.getAttribute("aria-valuenow"), null);
+  assert.equal(progress.getAttribute("aria-valuetext"), "Target progress unavailable");
+  assert.equal(ring.getAttribute("stroke-dashoffset"), "100");
+});
+
+test("activity shows five rows then fetches every older page sequentially", async (context) => {
+  const calls = [];
+  let active = 0;
+  let maxActive = 0;
+  const page = (ids, nextCursor, revision) => {
+    const data = fixture();
+    data.revision = revision;
+    data.activity = {
+      items: ids.map((id) => ({ ...data.activity.items[0], id })),
+      next_cursor: nextCursor,
+    };
+    return data;
+  };
+  const pages = new Map([
+    ["/api/dashboard", page([100, 99, 98, 97, 96, 95, 94], 94, 12)],
+    ["/api/dashboard?before=94", page([93, 92, 91], 91, 13)],
+    ["/api/dashboard?before=91", page([90, 89], null, 14)],
+  ]);
+  const { doc, controller } = setup(context, async (url) => {
+    calls.push(url);
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await Promise.resolve();
+    active -= 1;
+    return response(structuredClone(pages.get(url)));
+  });
+  await controller.request();
+  assert.equal(doc.getElementById("activity-list").children.length, 5);
+  assert.equal(doc.getElementById("activity-toggle").hidden, false);
+  assert.equal(doc.getElementById("activity-toggle").textContent, "View all activity");
+  assert.equal(doc.getElementById("activity-toggle").getAttribute("aria-expanded"), "false");
+  controller.onActivityToggle();
+  for (let count = 0; count < 5; count += 1) await flush();
+  assert.deepEqual(calls, ["/api/dashboard", "/api/dashboard?before=94", "/api/dashboard?before=91"]);
+  assert.equal(maxActive, 1);
+  assert.equal(controller.state.cursor, null);
+  assert.equal(controller.state.activity.length, 12);
+  assert.equal(doc.getElementById("activity-list").children.length, 12);
+  assert.equal(doc.getElementById("activity-toggle").textContent, "Show latest 5");
+  assert.equal(doc.getElementById("activity-toggle").getAttribute("aria-expanded"), "true");
+  assert.equal(doc.getElementById("activity-list").getAttribute("aria-busy"), "false");
+  assert.match(doc.getElementById("activity-state").textContent, /complete available history/);
+  controller.state.historyGap = true;
+  controller.view.renderActivity(controller.state);
+  controller.view.controls(controller);
+  assert.match(doc.getElementById("activity-note").textContent, /reported gap/);
+  assert.match(doc.getElementById("activity-state").textContent, /may have a gap/);
+  controller.onActivityToggle();
+  assert.equal(doc.getElementById("activity-list").children.length, 5);
+  assert.equal(doc.getElementById("activity-toggle").textContent, "View all activity");
+  assert.equal(doc.getElementById("activity-toggle").getAttribute("aria-expanded"), "false");
+});
+
+test("view all stops safely when an older cursor does not advance", async (context) => {
+  const calls = [];
+  const first = fixture();
+  first.activity = { items: Array.from({ length: 6 }, (_, index) => ({ ...first.activity.items[0], id: 60 - index })), next_cursor: 55 };
+  const stuck = fixture();
+  stuck.revision = 13;
+  stuck.activity = { items: [{ ...stuck.activity.items[0], id: 54 }], next_cursor: 55 };
+  const { doc, controller } = setup(context, async (url) => {
+    calls.push(url);
+    return response(structuredClone(url.includes("before") ? stuck : first));
+  });
+  await controller.request();
+  controller.onActivityToggle();
+  for (let count = 0; count < 3; count += 1) await flush();
+  assert.deepEqual(calls, ["/api/dashboard", "/api/dashboard?before=55"]);
+  assert.equal(controller.activityPaginationStalled, true);
+  assert.match(doc.getElementById("activity-state").textContent, /cursor did not advance/);
+});
+
+test("view all retains loaded rows across failure and resumes after refresh", async (context) => {
+  const first = fixture();
+  first.activity = { items: Array.from({ length: 6 }, (_, index) => ({ ...first.activity.items[0], id: 70 - index })), next_cursor: 65 };
+  const refreshed = structuredClone(first);
+  refreshed.revision = 13;
+  const older = fixture();
+  older.revision = 14;
+  older.activity = { items: [{ ...older.activity.items[0], id: 64 }], next_cursor: null };
+  let baseReads = 0;
+  let olderReads = 0;
+  const { doc, controller } = setup(context, async (url) => {
+    if (!url.includes("before")) return response(structuredClone(baseReads++ === 0 ? first : refreshed));
+    olderReads += 1;
+    return olderReads === 1
+      ? response({ ok: false, error: "reader_busy" }, false)
+      : response(structuredClone(older));
+  });
+  await controller.request();
+  controller.onActivityToggle();
+  for (let count = 0; count < 2; count += 1) await flush();
+  assert.equal(controller.error, "reader_busy");
+  assert.equal(controller.state.activity.length, 6);
+  assert.match(doc.getElementById("activity-state").textContent, /paused after 6 events/);
+  await controller.request();
+  for (let count = 0; count < 3; count += 1) await flush();
+  assert.equal(controller.error, null);
+  assert.equal(olderReads, 2);
+  assert.equal(controller.state.cursor, null);
+  assert.equal(controller.state.activity.length, 7);
+  assert.equal(doc.getElementById("activity-list").children.length, 7);
+});
+
+test("view all stops retrying an older page after bounded failures", async (context) => {
+  const first = fixture();
+  first.activity = { items: Array.from({ length: 6 }, (_, index) => ({ ...first.activity.items[0], id: 70 - index })), next_cursor: 65 };
+  let baseReads = 0;
+  let olderReads = 0;
+  const { doc, controller } = setup(context, async (url) => {
+    if (url.includes("before")) {
+      olderReads += 1;
+      return response({ ok: false, error: "reader_busy" }, false);
+    }
+    const data = structuredClone(first);
+    data.revision = 12 + baseReads++;
+    return response(data);
+  });
+  await controller.request();
+  controller.onActivityToggle();
+  for (let count = 0; count < 2; count += 1) await flush();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await controller.request();
+    for (let count = 0; count < 2; count += 1) await flush();
+  }
+  assert.equal(olderReads, 3);
+  assert.equal(controller.activityPaginationStalled, true);
+  assert.equal(controller.activityPaginationReason, "failures");
+  await controller.request();
+  for (let count = 0; count < 2; count += 1) await flush();
+  assert.equal(olderReads, 3);
+  assert.match(doc.getElementById("activity-state").textContent, /stopped after 3 failed reads/);
+});
+
+test("view all pauses older-page reads while the document is hidden", async (context) => {
+  const first = fixture();
+  first.activity = { items: Array.from({ length: 6 }, (_, index) => ({ ...first.activity.items[0], id: 70 - index })), next_cursor: 65 };
+  const older = fixture();
+  older.revision = 13;
+  older.activity = { items: [{ ...older.activity.items[0], id: 64 }], next_cursor: null };
+  const calls = [];
+  const { doc, controller } = setup(context, async (url) => {
+    calls.push(url);
+    return response(structuredClone(url.includes("before") ? older : first));
+  });
+  await controller.request();
+  doc.hidden = true;
+  controller.onActivityToggle();
+  await flush();
+  assert.deepEqual(calls, ["/api/dashboard"]);
+  doc.hidden = false;
+  controller.onVisibility();
+  for (let count = 0; count < 4; count += 1) await flush();
+  assert.deepEqual(calls, ["/api/dashboard", "/api/dashboard", "/api/dashboard?before=65"]);
+  assert.equal(controller.state.cursor, null);
+});
+
+test("pagehide clears cursor bookkeeping so page restore can resume view all", async (context) => {
+  const pending = deferred();
+  const first = fixture();
+  first.activity = { items: Array.from({ length: 6 }, (_, index) => ({ ...first.activity.items[0], id: 70 - index })), next_cursor: 65 };
+  const refreshed = structuredClone(first);
+  refreshed.revision = 13;
+  const older = fixture();
+  older.revision = 14;
+  older.activity = { items: [{ ...older.activity.items[0], id: 64 }], next_cursor: null };
+  let baseReads = 0;
+  let olderReads = 0;
+  const { controller } = setup(context, async (url) => {
+    if (!url.includes("before")) return response(structuredClone(baseReads++ === 0 ? first : refreshed));
+    olderReads += 1;
+    return olderReads === 1 ? pending.promise : response(structuredClone(older));
+  });
+  await controller.request();
+  controller.onActivityToggle();
+  assert.equal(controller.inFlight.before, 65);
+  assert.equal(controller.activityCursors.has(65), true);
+  controller.stop();
+  assert.equal(controller.activityCursors.size, 0);
+  pending.resolve(response(structuredClone(older)));
+  await flush();
+  controller.start();
+  for (let count = 0; count < 5; count += 1) await flush();
+  assert.equal(olderReads, 2);
+  assert.equal(controller.activityPaginationStalled, false);
+  assert.equal(controller.state.cursor, null);
+});
+
+test("account or goal changes collapse activity back to the newest five", async (context) => {
+  let payload = fixture();
+  payload.activity = { items: Array.from({ length: 6 }, (_, index) => ({ ...payload.activity.items[0], id: 80 - index })), next_cursor: null };
+  const { doc, controller } = setup(context, async () => response(structuredClone(payload)));
+  await controller.request();
+  controller.onActivityToggle();
+  assert.equal(controller.view.activityExpanded, true);
+  assert.equal(doc.getElementById("activity-list").children.length, 6);
+  payload = fixture();
+  payload.scope.goal_id = "goal-b";
+  payload.goal.id = "goal-b";
+  payload.activity = { items: [{ ...payload.activity.items[0], id: 200 }], next_cursor: null };
+  await controller.request();
+  assert.equal(controller.view.activityExpanded, false);
+  assert.equal(doc.getElementById("activity-list").children.length, 1);
+  assert.equal(doc.getElementById("activity-toggle").hidden, true);
+});
+
+test("a disjoint refresh starts a new cursor generation without a false loop stall", async (context) => {
+  const initial = fixture();
+  initial.activity = { items: [{ ...initial.activity.items[0], id: 100 }], next_cursor: null };
+  const refreshed = fixture();
+  refreshed.revision = 13;
+  refreshed.activity = { items: [{ ...refreshed.activity.items[0], id: 600 }], next_cursor: 500 };
+  const older = fixture();
+  older.revision = 14;
+  older.activity = { items: [{ ...older.activity.items[0], id: 499 }], next_cursor: null };
+  let baseReads = 0;
+  const calls = [];
+  const { controller } = setup(context, async (url) => {
+    calls.push(url);
+    if (url.includes("before")) return response(structuredClone(older));
+    return response(structuredClone(baseReads++ === 0 ? initial : refreshed));
+  });
+  await controller.request();
+  controller.view.activityExpanded = true;
+  controller.activityCursors.add(500);
+  await controller.request();
+  for (let count = 0; count < 3; count += 1) await flush();
+  assert.deepEqual(calls, ["/api/dashboard", "/api/dashboard", "/api/dashboard?before=500"]);
+  assert.equal(controller.activityPaginationStalled, false);
+  assert.equal(controller.state.cursor, null);
 });
 
 test("loop labels separate candle timing, earlier account wakes and observation gaps", async (context) => {
@@ -626,40 +845,29 @@ test("a journal revision and browser read leave loop evidence unchanged while so
   assert.equal(doc.getElementById("source-badge").textContent, "Stale observation");
 });
 
-test("SVG visibility updates the hidden attribute, not an unsupported property", async (context) => {
-  const payload = fixture();
-  const { doc, controller } = setup(context, async () => response(payload));
-  await controller.request();
-  assert.equal(doc.getElementById("progress-chart").getAttribute("hidden"), null);
-  payload.progress.points = [];
-  await controller.request();
-  assert.equal(doc.getElementById("progress-chart").getAttribute("hidden"), "");
-});
-
-test("unchanged polls preserve expanded/focused rows, exact table and active filter", async (context) => {
+test("unchanged polls preserve expanded and focused activity rows", async (context) => {
   let payload = fixture();
   const { doc, controller } = setup(context, async () => response(payload));
   await controller.request();
-  const row = controller.view.rowCaches.get("orders-list").values().next().value;
+  const row = controller.view.rowCaches.get("activity-list").values().next().value;
+  const intent = controller.view.rowCaches.get("intents-list").values().next().value;
   row.details.open = true;
   row.summary.focus();
   const replacements = row.summary.replacements;
-  const chartReplacements = doc.getElementById("chart-drawing").replacements;
-  doc.getElementById("chart-table-details").open = true;
-  controller.view.filter = "entry";
+  const intentReplacements = intent.summary.replacements;
+  const ringWrites = doc.getElementById("target-progress-ring").attributeWrites.get("stroke-dashoffset");
   payload = { ...structuredClone(payload), revision: 13, generated_at: "2026-11-04T12:00:25Z" };
   await controller.request();
   assert.equal(row.details.open, true);
   assert.equal(doc.activeElement, row.summary);
   assert.equal(row.summary.replacements, replacements);
-  assert.equal(doc.getElementById("chart-drawing").replacements, chartReplacements);
-  assert.equal(doc.getElementById("chart-table-details").open, true);
-  assert.equal(controller.view.filter, "entry");
-  payload.pending_orders[0].details.volume_remaining = "0.05";
+  assert.equal(intent.summary.replacements, intentReplacements);
+  assert.equal(doc.getElementById("target-progress-ring").attributeWrites.get("stroke-dashoffset"), ringWrites);
+  payload.activity.items[0].decision = "blocked";
   await controller.request();
   assert.equal(row.details.open, true);
   assert.equal(doc.activeElement, row.summary);
-  assert.match(row.summary.textContent, /0\.05 lots/);
+  assert.match(row.summary.textContent, /Latest check blocked/);
 });
 
 test("reader failure retains conspicuously last-known values and original timestamps", async (context) => {
@@ -681,12 +889,13 @@ test("reader failure retains conspicuously last-known values and original timest
   assert.match(doc.getElementById("source-badge").textContent, /Last-known \/ Stale observation/);
   assert.equal(doc.getElementById("net-gain").textContent, "+80.00 USD cents");
   payload = { ...fixture(), status: "unconfigured", revision: 0, account: null, scope: null, snapshot: null, metrics: null };
-  ok = true;
-  await controller.request();
-  assert.equal(controller.error, null);
-  assert.equal(doc.getElementById("configured-workspace").hidden, true);
-  assert.equal(doc.getElementById("orders-list").children.length, 0);
-  assert.match(doc.getElementById("empty-description").textContent, /values have been cleared/);
+    ok = true;
+    await controller.request();
+    assert.equal(controller.error, null);
+    assert.equal(doc.getElementById("configured-workspace").hidden, true);
+    assert.equal(doc.getElementById("activity-list").children.length, 0);
+    assert.equal(doc.getElementById("intents-list").children.length, 0);
+    assert.match(doc.getElementById("empty-description").textContent, /values have been cleared/);
   assert.equal(doc.getElementById("source-time").textContent, "Unavailable");
 });
 
@@ -700,20 +909,20 @@ test("reader error before first data remains unavailable without zero-filled fal
   assert.doesNotMatch(doc.getElementById("reader-error").textContent, /private detail/);
 });
 
-test("unknown orders render unavailable rather than an empty broker account", async (context) => {
+test("unknown order counts, progress and intents remain unavailable", async (context) => {
   const payload = fixture();
   payload.pending_orders = null;
   payload.exposure = { positions_count: null, orders_count: null, entry_orders_count: null, protective_orders_count: null };
   payload.unresolved_intents = null;
-  payload.progress = null;
+  payload.metrics.progress_pct = null;
   payload.metrics.target = null;
   payload.goal.target = null;
   const { doc, controller } = setup(context, async () => response(payload));
   await controller.request();
   assert.equal(doc.getElementById("pending-count").textContent, "Unavailable");
-  assert.match(doc.getElementById("orders-empty").textContent, /does not mean there are no/);
   assert.equal(doc.getElementById("approved-target").textContent, "Unavailable");
-  assert.equal(doc.getElementById("chart-empty").textContent, "Progress history unavailable.");
+  assert.equal(doc.getElementById("progress-pct").textContent, "Unavailable");
+  assert.equal(doc.getElementById("target-progress").getAttribute("aria-valuenow"), null);
   assert.match(doc.getElementById("intents-empty").textContent, /not an empty list/);
 });
 

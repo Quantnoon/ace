@@ -139,7 +139,7 @@ def pending_view(state, note, warnings):
             checked = checker.journal_entry(request, state, checker.stamp(note["recorded_at"], "recorded_at"))
             enrichment = {item["ticket"]: item for item in checked["pending_order_details"]}
         except (checker.CheckError, ValueError, KeyError, TypeError):
-            warnings.add("Pending-order details are unavailable; canonical orders are still shown.")
+            warnings.add("Pending-order details are unavailable; canonical order data remains available.")
     result, seen = [], set()
     try:
         for order in orders:

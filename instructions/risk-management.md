@@ -297,7 +297,7 @@ For nullable fields, omission/null means unknown unless explicitly named in `uns
 
 ### Display Events
 
-New ordinary helper events carry an allowlisted `detail.display` envelope with `version: 1`. Successful activation and `check`, `cycle`, `prepare`, `resolve` observations use the finalized command result, including post-resolution closure metrics. An accepted accounting observation may still block exposure or have individual unavailable metrics. Events without accepted result metrics, including draft-only writes or rejected observations, have null `snapshot_id`, `as_of` and `metrics`; they never copy last-good metrics into a new chart point. A `journal` event is a report, not an observation.
+New ordinary helper events carry an allowlisted `detail.display` envelope with `version: 1`. Successful activation and `check`, `cycle`, `prepare`, `resolve` observations use the finalized command result, including post-resolution closure metrics. An accepted accounting observation may still block exposure or have individual unavailable metrics. Events without accepted result metrics, including draft-only writes or rejected observations, have null `snapshot_id`, `as_of` and `metrics`; they never copy last-good metrics into a new saved target observation. A `journal` event is a report, not an observation.
 
 The envelope contains `account`, `policy_id`, `goal_id`, `snapshot_id`, source `as_of`, local `recorded_at`, `metrics`, `decision`, `reason_codes`, `loss_latched_at`, `target_latched_at`, `closure_verified`, `required_action` and `intent_id` (or null). Its metric allowlist is:
 
@@ -307,7 +307,7 @@ The envelope contains `account`, `policy_id`, `goal_id`, `snapshot_id`, source `
 
 Values come from the finalized result, not display prose or browser input. There is no historical `may_dispatch` permission in this envelope. Factual helper/intent events remain available even without an explanation; a completed intent means a settled request, not necessarily a fill or verified flat exposure.
 
-The [local dashboard](../README.md#local-dashboard) is a separate read-only projection, using these saved results for the current goal only and deduplicating by account/policy/goal and snapshot identity/time. Do not backfill events, reconstruct unseen peaks or invent continuous performance. An older current checkpoint has at most one timestamped cached point; missing history/prose is unavailable. Browser refresh, journal `recorded_at` and an active loop record do not refresh source `as_of`, establish MCP connectivity or promise a running guard. Optional unsupported/malformed display metadata is unavailable, not a reason to repair canonical state or treat the prose as authority.
+The [local dashboard](../README.md#local-dashboard) is a separate read-only projection, using these saved results for the current goal only and deduplicating by account/policy/goal and snapshot identity/time. Do not backfill events, reconstruct unseen peaks or invent continuous performance. An older current checkpoint has at most one timestamped cached observation; missing history/prose is unavailable. Browser refresh, journal `recorded_at` and an active loop record do not refresh source `as_of`, establish MCP connectivity or promise a running guard. Optional unsupported/malformed display metadata is unavailable, not a reason to repair canonical state or treat the prose as authority.
 
 ## SQLite And Recovery
 

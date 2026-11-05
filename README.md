@@ -6,15 +6,15 @@
 
 Client-neutral instructions for an AI agent that analyses markets and trades a MetaTrader 5 (MT5) account through an MT5 Model Context Protocol (MCP) server, with a small Python/SQLite account checker and a separate read-only local dashboard. You supply a monetary trailing-loss budget and a profit target; the agent reads the market itself and decides which orders to place. The mandate covers the whole named account, including manual exposure.
 
-Version: **[1.6.1](VERSION)** | [Changelog](CHANGELOG.md)
+Version: **[1.6.2](VERSION)** | [Changelog](CHANGELOG.md)
 
-## v1.6.1 Highlights
+## v1.6.2 Highlights
 
-- **Account Desk:** a responsive, read-only [local dashboard](#local-dashboard) showing the approved target, net progress, sampled history, risk headroom and stop/closure state.
-- **Visible decisions:** a source-bound [decision journal](instructions/risk-management.md#journal-reports) explaining entries, management, exits and reasons for waiting, with pending-order details kept separate from unresolved local actions.
-- **Automatic startup:** Ace starts or reuses the matching viewer during normal sessions, without a separate terminal, frontend build or new trading approval. Startup respects the client's process permissions and leaves unrelated services alone.
+- **Animated target:** the responsive, read-only [local dashboard](#local-dashboard) now presents exact saved target progress in an animated donut, with essential amounts visible and accounting details available on demand.
+- **Focused activity:** Account activity shows the newest five events first and can fetch the complete recorded history through bounded pages. Unresolved local requests remain visible directly below it.
+- **Cleaner account desk:** the detailed broker pending-order list is no longer rendered. Canonical order data and counts remain available to risk checks and the read-only API.
 
-The Unreleased loop-reliability changes use SQLite schema 3, read versions 1/2/3 and retain version-1 journal/display envelopes. Existing checkpoints keep approved limits, baselines, latches and history; read-only access never upgrades them. Richer history appears only from real new observations, not backfill. See the [changelog](CHANGELOG.md) for released and upcoming changes.
+Checkpoint compatibility is unchanged: SQLite schema 3 reads versions 1/2/3, the dashboard API stays at version 1, and journal/display envelopes stay at version 1. Existing checkpoints keep approved limits, baselines, latches and history; read-only access never upgrades them. See the [changelog](CHANGELOG.md) for release details.
 
 ## Getting Started
 
@@ -96,9 +96,9 @@ not an OS startup task, a trading daemon or proof that the AI is executing betwe
 
 The separate loopback HTTP server serves static UI files and read-only GET routes, opening SQLite with `mode=ro`. It cannot trade, change settings, approve or activate state, start the agent, or refresh MCP. Starting or viewing it does not begin onboarding or grant trading authority; it needs no client-specific configuration.
 
-The view shows the current approved target and estimated net progress, a sampled current-goal chart, account-wide risk/stop state, recorded activity and explanations, and actual pending orders including manual entries and protective orders. Local prepared/unknown intentions are not broker pending orders; a settled request does not necessarily mean a fill or a flat account. Missing order details and explanations remain unavailable.
+The view shows the current approved target and exact estimated net progress in an animated donut, essential target amounts, account-wide risk/stop state, recorded decisions, and the newest five activity events with an on-demand complete-history view. Unresolved local requests remain visible below activity. The detailed broker pending-order list is not rendered, but canonical order counts and read-only API data remain available; local prepared/unknown intentions are not broker orders, and a settled request does not necessarily mean a fill or a flat account.
 
-Page refresh rereads saved records, not a continuous broker feed. Freshness follows source `as_of` and the approved maximum age, never the page refresh, journal time or recorded active loop. The viewer distinguishes financial lifecycle, planned/overdue wakes, account-observation gaps and cycle spacing; health remains execution-unverified, and an overdue wake does not prove a crash. Missing state is unconfigured without file creation; draft-only amounts cannot replace an approved target. Stale or failed reads retain at most labeled last-known data with original timestamps, not zeros or silent repair. Sampled history begins with actual observations; legacy gaps/prose stay unavailable, not backfilled. Neither chart nor dashboard promises returns or continuous protection.
+Page refresh rereads saved records, not a continuous broker feed. Freshness follows source `as_of` and the approved maximum age, never the page refresh, journal time or recorded active loop. The viewer distinguishes financial lifecycle, planned/overdue wakes, account-observation gaps and cycle spacing; health remains execution-unverified, and an overdue wake does not prove a crash. Missing state is unconfigured without file creation; draft-only amounts cannot replace an approved target. Stale or failed reads retain at most labeled last-known data with original timestamps, not zeros or silent repair. The donut's arc is bounded to 0-100 for geometry while its text retains exact negative or above-target progress; it is not a trigger, promised return or continuous guard.
 
 ## Loop Sessions
 
