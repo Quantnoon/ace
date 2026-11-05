@@ -68,7 +68,7 @@ ul, ol { padding: 0; margin: 0; }
 .desk { max-width: 1680px; margin: 0 auto; padding: 40px clamp(20px, 4vw, 64px) 26px; }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
 .page-heading .eyebrow { margin-bottom: 12px; }
-.page-heading nav { display: flex; gap: 26px; padding-bottom: 4px; font-size: .8rem; }
+.page-heading nav { display: flex; flex-wrap: wrap; gap: 26px; padding-bottom: 4px; font-size: .8rem; }
 .page-heading nav a { text-decoration: none; color: var(--muted); }
 .page-heading nav a:hover { color: var(--orange); }
 .source-strip { display: flex; justify-content: space-between; align-items: center; gap: 14px 28px; border-block: 1px solid var(--line); padding: 13px 0; font-size: .74rem; }
@@ -92,6 +92,10 @@ ul, ol { padding: 0; margin: 0; }
 .draft-amounts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; border-block: 1px solid var(--line); padding: 24px 0; margin-top: 30px; }
 .draft-amounts dd { color: var(--orange); margin-top: 8px; font-size: 1.6rem; }
 
+.session-strip { border-bottom: 1px solid var(--line); padding: 23px 0; }
+.session-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin-bottom: 14px; }
+.session-metrics dd { margin-top: 5px; font-size: .95rem; }
+.session-strip > p + p { margin-top: 5px; }
 .overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: clamp(28px, 4vw, 58px); margin-top: 32px; }
 .section-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
 .section-index { color: var(--orange); font-family: var(--mono); font-size: .7rem; font-weight: 400; margin-right: 12px; }
@@ -100,7 +104,10 @@ ul, ol { padding: 0; margin: 0; }
 .target-progress svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .target-progress-track, .target-progress-ring { fill: none; stroke-width: 14; vector-effect: non-scaling-stroke; }
 .target-progress-track { stroke: var(--line-soft); }
-.target-progress-ring { stroke: var(--orange); stroke-linecap: round; transition: stroke-dashoffset 900ms cubic-bezier(.22, .75, .2, 1), stroke 200ms ease; }
+.target-progress-ring { stroke: var(--line-soft); stroke-linecap: round; transition: stroke-dashoffset 900ms cubic-bezier(.22, .75, .2, 1), stroke 200ms ease; }
+.target-progress[data-tone="positive"] .target-progress-ring { stroke: var(--green); }
+/* Negative progress has no filled arc, so keep the loss visible on the track. */
+.target-progress[data-tone="danger"] .target-progress-track,
 .target-progress[data-tone="danger"] .target-progress-ring { stroke: var(--red); }
 .target-progress-copy { position: absolute; inset: 19%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 9px; }
 .target-progress-copy strong { font-size: clamp(1.35rem, 2.8vw, 2.35rem); line-height: 1.08; font-weight: 520; }
@@ -165,8 +172,12 @@ summary::-webkit-details-marker { display: none; }
 .context-fields > div { margin-bottom: 13px; }
 .context-fields dd { white-space: pre-wrap; font-size: .8rem; margin-top: 3px; }
 .context-fields dt { font-size: .72rem; }
-.activity-section { border-top: 1px solid var(--line); padding-top: 26px; margin-top: 30px; }
-.activity-section .section-heading { margin-bottom: 7px; }
+.decision-section, .activity-section { border-top: 1px solid var(--line); padding-top: 26px; margin-top: 30px; }
+.activity-section .section-heading, .strategies-section .section-heading { margin-bottom: 7px; }
+.strategies-section > .section-note + .section-note { margin-top: 6px; }
+.strategy-context { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding: 14px; background: var(--surface); margin-bottom: 16px; }
+.strategy-context h3 { font-size: .8rem; margin-bottom: 12px; }
+.strategy-context .context-fields { padding: 0; margin: 0; }
 .timeline-list, .intent-list { list-style: none; }
 .timeline-list { margin-top: 22px; }
 .timeline-list > li { border-left: 1px solid var(--line); margin-left: 5px; padding-left: 20px; position: relative; }
@@ -232,6 +243,8 @@ details[open] > summary .row-toggle::after { content: "-"; }
   .source-strip { align-items: stretch; flex-direction: column; }
   .refresh-info { justify-content: space-between; border-top: 1px solid var(--line-soft); padding-top: 12px; }
   .refresh-info > span { text-align: left; }
+  .session-metrics { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .strategy-context { grid-template-columns: minmax(0, 1fr); }
   .target-overview { grid-template-columns: minmax(0, 1fr); gap: 22px; }
   .target-progress { width: min(72vw, 270px); }
   .target-summary { gap: 20px; }

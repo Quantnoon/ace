@@ -73,15 +73,21 @@ class AccountCheckTests(unittest.TestCase):
     def draft(self, **values):
         return self.call("draft", account=ACCOUNT, source_ref="synthetic-account-read", **values)
 
-    def start(self, budget="5", target="15", equity="100", config=None, **snapshot_changes):
+    def start(self, budget="5", target="15", equity="100", config=None, approval_mode="reviewed", **snapshot_changes):
         config = MANDATE if config is None else config
         self.draft(budget=budget, target=target, mandate=config)
         self.anchor = None
+        requested_at = checker.utc(self.now)
         sample = self.snap(equity, **snapshot_changes)
         result = self.call("activate", mode="start", mandate=config, baseline=sample, snapshot=sample,
-                           approval_ref="synthetic-final-approval", approved_at=checker.utc(self.now))
+                           approval_ref="synthetic-final-approval", approval_mode=approval_mode,
+                           approved_at=requested_at if approval_mode == "start_request" else checker.utc(self.now))
         self.assertIsNotNone(self.state()["policy"])
         return result
+
+    def control(self, action, evidence_ref=None, **changes):
+        return self.call("session", action=action, evidence_ref=evidence_ref or "synthetic:user-" + action,
+                         reason="Synthetic session " + action, **changes)
 
     def entry(self, action_id="a1", risk="1", **changes):
         state = self.state()
@@ -89,9 +95,17 @@ class AccountCheckTests(unittest.TestCase):
                   "authority_ref": "synthetic-final-approval", "tool_permission": True,
                   "policy_id": state["policy"]["id"], "goal_id": state["goal"]["id"],
                   "symbol": "EURUSD", "analysis_ref": "synthetic-h1-trend-read", "signal_id": "signal-" + action_id,
-                  "risk": risk, "margin": "10",
-                  "broker_checks_passed": True, "protective_stop_in_request": True,
-                  "parameters": {"symbol": "EURUSD", "volume": Decimal("0.01"), "sl": Decimal("1.09"), "side": "buy"}}
+                   "risk": risk, "margin": "10",
+                   "broker_checks_passed": True, "protective_stop_in_request": True,
+                   "parameters": {"symbol": "EURUSD", "volume": Decimal("0.01"), "sl": Decimal("1.09"), "side": "buy"},
+                   "context": {"version": 1, "operation": "entry", "rationale": "Confirmed pullback within the original risk allocation.",
+                               "source_refs": ["synthetic:closed-bar"], "origin_intent_id": None,
+                               "strategy": {"name": "Trend pullback", "thesis": "Confirmed support holds within the higher-timeframe trend.",
+                                            "side": "buy", "timeframe": state["mandate"].get("entry_timeframe", "M15"),
+                                            "invalidation": "Close below confirmed support.", "expiry_rule": "Cancel at the verified session close.",
+                                            "breakeven_rule": "After a confirmed favorable move with costs covered.",
+                                            "trailing_rule": "Tighten behind confirmed higher lows.",
+                                            "addition_rule": "Only profitable, protected earlier legs within the original allocation."}}}
         result.update(changes)
         return result
 
@@ -684,14 +698,15 @@ class AccountCheckTests(unittest.TestCase):
         result = self.call("cycle", snapshot=self.snap(), bar=self.bar())
         self.assertTrue(result["may_continue"])
         with closing(sqlite3.connect(self.db)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], checker.SCHEMA_VERSION)
         self.assertEqual(self.state()["loop"]["cycles"], 1)
 
-    def test_one_approval_batch_journal_and_repeated_cycles_need_no_reactivation(self):
-        config = dict(MANDATE, entry_timeframe="M5", latch_check_seconds=300)
-        self.start(config=config)
+    def test_start_request_batch_journal_and_settlement_continue_until_user_stop(self):
+        config = dict(MANDATE, entry_timeframe="M5", latch_check_seconds=60)
+        self.start(config=config, approval_mode="start_request")
         self.assertIsNone(self.state()["loop"])
         approval = self.state()["approval_ref"]
+        session = self.control("start", approval)["session"]
         self.now += timedelta(seconds=5)
         first = self.call("cycle", snapshot=self.snap(), clock=self.clock(5), bar=self.bar(minutes=5))
         loop_id = first["loop"]["id"]
@@ -705,9 +720,14 @@ class AccountCheckTests(unittest.TestCase):
         self.assertTrue(resolved["may_continue"])
         self.assertEqual(resolved["loop"]["cycles"], 1)
         journal = self.call("journal", **self.journal_request(activity="entry"))
-        self.assertNotIn("may_continue", journal)
+        self.assertTrue(journal["may_continue"])
+        self.assertEqual(journal["loop"], resolved["loop"])
         self.assertTrue(self.state()["last_result"]["may_continue"])
-        for _ in range(4):
+        for _ in range(7):
+            self.now = checker.stamp(journal["loop"]["next_wake_at"], "wake")
+            risk_check = self.call("check", snapshot=self.snap(pending_orders=orders))
+            self.assertTrue(risk_check["may_continue"])
+            self.assertEqual(risk_check["loop"]["cycles"], self.state()["loop"]["cycles"])
             self.now += timedelta(minutes=5)
             result = self.call("cycle", snapshot=self.snap(pending_orders=orders),
                                clock=self.clock(5), bar=self.bar(minutes=5))
@@ -715,8 +735,9 @@ class AccountCheckTests(unittest.TestCase):
             self.assertEqual(result["required_action"], "none")
             self.assertEqual(result["loop"]["id"], loop_id)
             self.assertEqual(self.state()["approval_ref"], approval)
-            self.call("journal", **self.journal_request())
-        self.assertEqual(self.state()["loop"]["cycles"], 5)
+            journal = self.call("journal", **self.journal_request())
+            self.assertTrue(journal["may_continue"])
+        self.assertEqual(self.state()["loop"]["cycles"], 8)
         triggered = self.call("check", snapshot=self.snap("115", pending_orders=orders))
         self.assertTrue(triggered["may_continue"])
         self.assertEqual(triggered["loop"]["status"], "closing")
@@ -725,11 +746,24 @@ class AccountCheckTests(unittest.TestCase):
         self.assertTrue(permitted["may_dispatch"])
         final = self.call("resolve", intent_id="r1", outcome="completed", readback_verified=True,
                           broker_tickets=["pending-1"], evidence_ref="synthetic:cancelled-flat", snapshot=self.snap("114.7"))
-        self.assertFalse(final["may_continue"])
+        self.assertTrue(final["may_continue"])
         self.assertEqual(final["loop"]["id"], loop_id)
-        self.assertEqual(final["loop"]["cycles"], 5)
+        self.assertEqual(final["loop"]["cycles"], 8)
         self.assertEqual(final["loop"]["status"], "closed")
         self.assertEqual(final["metrics"]["final_shortfall"], "0.3")
+        self.assertEqual(final["loop"]["wake_reason"], "monitor")
+        self.call("journal", **self.journal_request(activity="exit"))
+        self.now += timedelta(minutes=5)
+        monitor = self.call("check", snapshot=self.snap("114.7"))
+        self.assertTrue(monitor["may_continue"])
+        self.assertTrue(monitor["closure_verified"])
+        self.assertEqual(monitor["session"]["id"], session["id"])
+        self.assertEqual(monitor["loop"]["cycles"], 8)
+        self.assertIsNone(monitor["loop"]["next_cycle_at"])
+        stopped = self.control("stop")
+        self.assertFalse(stopped["may_continue"])
+        self.assertEqual(stopped["loop"]["status"], "closed")
+        self.assertIsNone(stopped["loop"]["next_wake_at"])
         with closing(sqlite3.connect(self.db)) as connection:
             self.assertEqual(connection.execute("SELECT count(*) FROM events WHERE command='activate'").fetchone()[0], 1)
 
@@ -1080,7 +1114,7 @@ class AccountCheckTests(unittest.TestCase):
         self.assertEqual(self.state()["loop"], legacy_loop)
         self.assertNotIn("observation", self.state())
         with closing(sqlite3.connect(self.db)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], checker.SCHEMA_VERSION)
             self.assertEqual(connection.execute("SELECT * FROM intents").fetchall(), intents)
             detail = json.loads(connection.execute("SELECT detail FROM events ORDER BY id DESC LIMIT 1").fetchone()[0])
         self.assertEqual(detail["migration"]["legacy_loop"], legacy_loop)
@@ -1101,6 +1135,312 @@ class AccountCheckTests(unittest.TestCase):
         self.assertEqual(next_cycle["loop"]["cycles"], legacy_loop["cycles"] + 1)
         self.assertEqual(next_cycle["loop"]["next_cycle_at"], "2026-11-03T20:15:05Z")
 
+    def test_start_request_baseline_is_fresh_after_request_and_preserves_activation_loss(self):
+        self.draft(budget="5", target="15", mandate=MANDATE)
+        requested_at = checker.utc(self.now)
+        baseline = self.snap("100")
+        current = self.snap("95", positions=[position()])
+        result = self.call("activate", mode="start", approval_mode="start_request", mandate=MANDATE,
+                           baseline=baseline, snapshot=current, approval_ref="synthetic:user-trade", approved_at=requested_at)
+        self.assertEqual(result["decision"], "loss_stop")
+        state = self.state()
+        self.assertEqual(state["approval_mode"], "start_request")
+        self.assertEqual(state["goal"]["approved_at"], requested_at)
+        self.assertEqual(state["goal"]["started_at"], baseline["as_of"])
+        self.assertEqual(state["policy"]["start_equity"], "100")
+        self.assertEqual(state["peak"], "100")
+        self.assertIsNone(state["loop"])
+        self.assertNotIn("session", state)
+        self.control("start", "synthetic:user-trade")
+        result = self.call("cycle", snapshot=self.snap("95", positions=[position()]))
+        self.assertTrue(result["may_continue"])
+        self.assertEqual(result["loop"]["wake_reason"], "closure")
+        self.assertTrue(self.call("prepare", snapshot=self.snap("95", positions=[position()]),
+                                  action=self.reduction(reason="loss"))["may_dispatch"])
+
+    def test_start_request_rejects_old_future_or_unapproved_baselines(self):
+        self.draft(budget="5", target="15", mandate=MANDATE)
+        requested_at = checker.utc(self.now)
+        baseline = self.snap()
+        current = self.snap()
+        request = dict(mode="start", approval_mode="start_request", mandate=MANDATE, baseline=baseline,
+                       snapshot=current, approval_ref="synthetic:user-trade", approved_at=requested_at)
+        before = self.state()
+        for changes, code in (({"approval_mode": "infer"}, "invalid_approval_mode"),
+                              ({"approval_ref": ""}, "invalid_approval_ref"),
+                              ({"approved_at": current["as_of"]}, "baseline_predates_start_request"),
+                              ({"approved_at": checker.utc(self.now + timedelta(seconds=1))}, "future_approval"),
+                              ({"baseline": dict(baseline, as_of=checker.utc(self.now + timedelta(seconds=1)))}, "future_snapshot")):
+            with self.subTest(code=code):
+                with self.assertRaisesRegex(checker.CheckError, code):
+                    self.call("activate", **dict(request, **changes))
+                self.assertEqual(self.state(), before)
+        self.now += timedelta(seconds=61)
+        with self.assertRaisesRegex(checker.CheckError, "stale_or_future_snapshot"):
+            self.call("activate", **dict(request, snapshot=self.snap()))
+        self.assertEqual(self.state(), before)
+
+    def test_rejected_start_request_goal_transition_still_observes_existing_loss(self):
+        self.start(approval_mode="start_request")
+        self.control("start")
+        self.call("cycle", snapshot=self.snap())
+        self.draft(target="20", mandate=MANDATE)
+        requested_at = checker.utc(self.now)
+        result = self.call("activate", mode="new_goal", mandate=MANDATE, approval_mode="start_request",
+                           baseline=self.snap("95"), snapshot=None,
+                           approval_ref="synthetic:new-target", approved_at=requested_at)
+        self.assertEqual(result["decision"], "loss_stop")
+        self.assertIsNotNone(result["loss_latched_at"])
+        self.assertEqual(self.state()["goal"]["target"], "15")
+        self.assertEqual(result["loop"]["status"], "closing")
+        self.assertTrue(result["may_continue"])
+
+    def test_rejected_stale_start_request_baseline_cannot_ratchet_existing_peak(self):
+        self.start()
+        self.control("start")
+        self.call("cycle", snapshot=self.snap())
+        self.draft(target="20", mandate=MANDATE)
+        requested_at = checker.utc(self.now)
+        baseline = self.snap("110")
+        self.now += timedelta(seconds=61)
+        result = self.call("activate", mode="new_goal", mandate=MANDATE, approval_mode="start_request",
+                           baseline=baseline, snapshot=self.snap("100"),
+                           approval_ref="synthetic:new-target", approved_at=requested_at)
+        self.assertIn("stale_or_future_snapshot", result["reason_codes"])
+        self.assertEqual(self.state()["peak"], "100")
+        self.assertIsNone(self.state()["loss_latched_at"])
+        self.assertTrue(result["may_continue"])
+
+    def test_session_control_does_not_observe_and_stop_fences_routine_actions(self):
+        self.start()
+        self.control("start")
+        self.now += timedelta(seconds=5)
+        self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar())
+        before = self.state()
+        self.now += timedelta(minutes=10)
+        with patch.object(checker, "observe", side_effect=AssertionError("control must not observe")), \
+                patch.object(checker, "report", side_effect=AssertionError("control must not check money")):
+            stopped = self.control("stop")
+        after = self.state()
+        for field in before.keys() - {"session", "loop"}:
+            self.assertEqual(after[field], before[field], field)
+        self.assertEqual(after["loop"]["cycles"], before["loop"]["cycles"])
+        self.assertEqual(after["loop"]["status"], "active")
+        self.assertFalse(stopped["may_continue"])
+        self.assertFalse(stopped["may_dispatch"])
+        self.assertIsNone(stopped["loop"]["next_wake_at"])
+        self.assertEqual(stopped["loop_health"]["execution"], "unverified")
+        checked = self.call("check", snapshot=self.snap())
+        self.assertFalse(checked["may_continue"])
+        self.assertIsNone(checked["loop"]["next_wake_at"])
+        cycled = self.call("cycle", snapshot=self.snap(), clock=self.clock(), bar=self.bar())
+        self.assertIn("session_not_active", cycled["reason_codes"])
+        self.assertEqual(cycled["loop"]["cycles"], before["loop"]["cycles"])
+        for action in (self.entry(), self.reduction()):
+            rejected = self.call("prepare", snapshot=self.snap(positions=[position()]), action=action)
+            self.assertIn("session_not_active", rejected["reason_codes"])
+            self.assertFalse(rejected["may_dispatch"])
+            self.assertFalse(rejected["may_continue"])
+        self.assertEqual(self.call("status")["outstanding_intents"], [])
+        resumed = self.activate_again("resume")
+        self.assertFalse(resumed["may_continue"])
+        self.assertEqual(self.state()["session"]["status"], "stopped")
+        self.assertIsNone(resumed["loop"]["next_wake_at"])
+
+    def test_financial_activation_modes_and_owner_handoff_never_clear_user_stop(self):
+        self.start(approval_mode="start_request")
+        self.control("start")
+        self.call("cycle", snapshot=self.snap())
+        self.control("stop")
+        stop = self.state()["session"]
+        prior = self.state()
+        result = self.activate_again("resume", owner_id="new-owner", takeover_ref="synthetic:old-writer-stopped",
+                                     approval_ref=prior["approval_ref"], approved_at=prior["approved_at"])
+        self.assertFalse(result["may_continue"])
+        config = dict(MANDATE, entry_timeframe="H1")
+        self.draft(budget="5", target="15", mandate=config, owner_id="new-owner")
+        self.activate_again("reauthorize", mandate=config, owner_id="new-owner", approval_mode="start_request")
+        self.assertEqual(self.state()["session"], stop)
+        self.draft(target="20", mandate=config, owner_id="new-owner")
+        self.activate_again("new_goal", mandate=config, owner_id="new-owner", approval_mode="start_request")
+        self.assertEqual(self.state()["session"], stop)
+        self.draft(budget="10", mandate=config, owner_id="new-owner")
+        self.anchor = None
+        result = self.activate_again("replace_policy", mandate=config, owner_id="new-owner", approval_mode="start_request",
+                                     reset_reason="Synthetic explicit replacement")
+        self.assertFalse(result["may_continue"])
+        self.assertEqual(self.state()["session"], stop)
+        self.assertNotEqual(self.state()["policy"]["id"], prior["policy"]["id"])
+        denied = self.call("prepare", owner_id="new-owner", snapshot=self.snap(), action=self.entry())
+        self.assertIn("session_not_active", denied["reason_codes"])
+
+    def test_session_stop_preserves_pending_recovery_and_authorized_safety_reductions(self):
+        self.start()
+        self.control("start")
+        self.call("cycle", snapshot=self.snap())
+        self.call("prepare", snapshot=self.snap(), action=self.entry())
+        self.control("stop")
+        unknown = self.call("resolve", intent_id="a1", outcome="unknown", evidence_ref="synthetic:timeout", snapshot=self.snap())
+        self.assertFalse(unknown["may_continue"])
+        self.assertEqual(len(self.call("status")["outstanding_intents"]), 1)
+        self.call("resolve", intent_id="a1", outcome="not_executed", readback_verified=True,
+                  evidence_ref="synthetic:terminal-rejection", snapshot=self.snap())
+        safety = self.call("prepare", snapshot=self.snap("95", positions=[position()]), action=self.reduction(reason="loss"))
+        self.assertTrue(safety["may_dispatch"])
+        self.assertFalse(safety["may_continue"])
+        settled = self.call("resolve", intent_id="r1", outcome="completed", readback_verified=True,
+                            broker_tickets=["p1"], evidence_ref="synthetic:flat", snapshot=self.snap("95"))
+        self.assertTrue(settled["closure_verified"])
+        self.assertFalse(settled["may_continue"])
+        self.assertIsNone(settled["loop"]["next_wake_at"])
+        self.assertEqual(self.state()["session"]["status"], "stopped")
+
+    def test_interruption_can_resume_but_user_stop_cannot_be_overridden_or_replayed(self):
+        self.start()
+        first = self.control("start")["session"]
+        self.call("cycle", snapshot=self.snap())
+        paused = self.control("interrupt")
+        self.assertFalse(paused["may_continue"])
+        self.assertIsNone(paused["loop"]["next_wake_at"])
+        self.assertIn("session_not_active", self.call("prepare", snapshot=self.snap(), action=self.entry())["reason_codes"])
+        before = self.state()
+        resumed = self.control("resume")
+        self.assertEqual(resumed["session"]["id"], first["id"])
+        self.assertEqual(resumed["session"]["request_ref"], first["request_ref"])
+        self.assertEqual(self.state()["last_result"], before["last_result"])
+        self.assertEqual(resumed["loop"]["wake_reason"], "session_check")
+        self.assertEqual(resumed["loop"]["next_wake_at"], checker.utc(self.now))
+        self.control("stop")
+        for action in ("resume", "interrupt", "start"):
+            with self.assertRaises(checker.CheckError):
+                self.control(action)
+        second = self.control("start", "synthetic:new-user-start")["session"]
+        self.assertNotEqual(second["id"], first["id"])
+        self.control("stop", "synthetic:second-user-stop")
+        with self.assertRaisesRegex(checker.CheckError, "new_session_request_required"):
+            self.control("start", first["request_ref"])
+        self.assertEqual(self.state()["session"]["status"], "stopped")
+
+    def test_control_evidence_cannot_be_replayed_across_sessions_or_recoveries(self):
+        self.start()
+        self.control("start", "synthetic:start-A")
+        self.control("stop", "synthetic:stop-A")
+        self.control("start", "synthetic:start-B")
+        self.control("interrupt", "synthetic:interruption-B")
+        before = self.state()
+        for evidence in ("synthetic:start-A", "synthetic:stop-A", "synthetic:start-B", "synthetic:interruption-B", before["approval_ref"]):
+            with self.subTest(evidence=evidence):
+                with self.assertRaisesRegex(checker.CheckError, "new_session_evidence_required"):
+                    self.control("resume", evidence)
+                self.assertEqual(self.state(), before)
+        self.control("resume", "synthetic:recovery-B")
+        with self.assertRaisesRegex(checker.CheckError, "new_session_evidence_required"):
+            self.control("interrupt", "synthetic:interruption-B")
+        with self.assertRaisesRegex(checker.CheckError, "new_session_evidence_required"):
+            self.control("stop", "synthetic:stop-A")
+        self.control("interrupt", "synthetic:second-interruption-B")
+        with self.assertRaisesRegex(checker.CheckError, "new_session_evidence_required"):
+            self.control("resume", "synthetic:recovery-B")
+        self.control("resume", "synthetic:second-recovery-B")
+        stopped = self.control("stop", "synthetic:stop-B")
+        self.assertFalse(self.control("stop", "synthetic:stop-B")["may_continue"])
+        self.assertEqual(self.state()["session"]["id"], stopped["session"]["id"])
+
+    def test_clock_rollback_keeps_user_stop_and_recovery_readable(self):
+        self.start()
+        started = self.control("start")["session"]
+        self.call("cycle", snapshot=self.snap())
+        before = self.state()
+        self.now = checker.stamp(started["started_at"], "started_at") - timedelta(seconds=1)
+        stopped = self.control("stop")
+        saved = self.state()
+        self.assertEqual(saved["session"]["status"], "stopped")
+        self.assertEqual(saved["session"]["updated_at"], checker.utc(self.now))
+        self.assertEqual(saved["session"]["started_at"], started["started_at"])
+        self.assertEqual(saved["last_result"], before["last_result"])
+        self.assertEqual(saved["observation"], before["observation"])
+        self.assertFalse(stopped["may_continue"])
+        self.assertIsNone(stopped["loop"]["next_wake_at"])
+        self.now += timedelta(seconds=10)
+        self.control("start", "synthetic:new-user-start")
+        self.control("interrupt")
+        self.now -= timedelta(seconds=1)
+        resumed = self.control("resume")
+        self.assertTrue(resumed["may_continue"])
+        self.assertEqual(self.state()["session"]["updated_at"], checker.utc(self.now))
+        self.assertEqual(self.state()["observation"], before["observation"])
+
+    def test_session_control_requires_configured_state_valid_input_and_single_writer(self):
+        with self.assertRaisesRegex(checker.CheckError, "setup_incomplete"):
+            self.control("start")
+        self.assertFalse(self.db.exists())
+        self.draft(budget="5", target="15")
+        with self.assertRaisesRegex(checker.CheckError, "setup_incomplete"):
+            self.control("start")
+        self.start()
+        before = self.state()
+        variants = ({"owner_id": "other"}, {"expected_revision": 0}, {"snapshot": self.snap()},
+                    {"action": "continue"}, {"evidence_ref": "C:\\private\\receipt.json"}, {"reason": "x" * 501})
+        request = {"action": "start", "evidence_ref": "synthetic:user-start", "reason": "User requested trading"}
+        for changes in variants:
+            with self.subTest(changes=list(changes)):
+                with self.assertRaises(checker.CheckError):
+                    self.call("session", **dict(request, **changes))
+                self.assertEqual(self.state(), before)
+        stopped = self.control("stop")
+        self.assertIsNone(stopped["session"]["started_at"])
+        self.assertIsNone(stopped["session"]["request_ref"])
+        self.assertIn("session_not_active", self.call("prepare", snapshot=self.snap(), action=self.entry())["reason_codes"])
+        with self.assertRaisesRegex(checker.CheckError, "new_session_request_required"):
+            self.control("start", before["approval_ref"])
+
+    def test_closed_monitoring_preserves_latches_counters_and_receipt_based_deadlines(self):
+        for interval, seconds in ((0, 300), (30, 30), (600, 300)):
+            with self.subTest(interval=interval):
+                self.db = Path(self.temp.name) / (str(interval) + ".sqlite3")
+                self.revision = 0
+                self.start(config=dict(MANDATE, latch_check_seconds=interval))
+                self.control("start")
+                self.call("cycle", snapshot=self.snap())
+                flat = self.call("check", snapshot=self.snap("95"))
+                loop = flat["loop"]
+                self.assertTrue(flat["may_continue"])
+                self.assertTrue(flat["closure_verified"])
+                self.assertEqual(loop["wake_reason"], "monitor")
+                self.assertEqual(loop["next_wake_at"], checker.utc(self.now + timedelta(seconds=seconds)))
+                self.call("journal", **self.journal_request(activity="exit"))
+                self.assertEqual(self.state()["loop"], loop)
+                self.now += timedelta(seconds=10)
+                replay = self.call("check", snapshot=self.state()["last_snapshot"])
+                self.assertEqual(replay["loop"], loop)
+                self.now += timedelta(seconds=max(seconds, 61))
+                self.assertEqual(self.call("status")["loop_health"]["wake_overdue_seconds"], 10 + max(seconds, 61) - seconds)
+                stale = self.call("check", snapshot=self.state()["last_snapshot"])
+                self.assertTrue(stale["may_continue"])
+                self.assertFalse(stale["closure_verified"])
+                closed = self.call("cycle", snapshot=self.snap("95"))
+                for field in ("id", "cycles", "last_cycle_at", "ended_at", "bar_high_water"):
+                    self.assertEqual(closed["loop"][field], loop[field])
+                self.assertEqual(closed["loop"]["next_wake_at"], checker.utc(self.now + timedelta(seconds=seconds)))
+                late = self.call("check", snapshot=self.snap("95", positions=[position("late-fill")]))
+                self.assertEqual(late["loop"]["id"], loop["id"])
+                self.assertEqual(late["loop"]["status"], "closing")
+                self.assertEqual(late["loop"]["wake_reason"], "closure")
+                self.assertIsNotNone(late["loss_latched_at"])
+
+    def test_malformed_saved_session_fails_closed_instead_of_becoming_legacy(self):
+        self.start()
+        original = self.state()
+        for invalid in ({}, False, {"status": "running"}, {"status": "active"}):
+            with self.subTest(invalid=invalid):
+                state = dict(original, session=invalid)
+                with closing(sqlite3.connect(self.db)) as connection, connection:
+                    checker.save_state(connection, self.revision, state, "synthetic-corruption", {}, self.now)
+                with self.assertRaises(checker.CheckError):
+                    self.call("status")
+                with self.assertRaises(checker.CheckError):
+                    self.call("prepare", snapshot=self.snap(), action={})
+
     def journal_request(self, **changes):
         sample = self.state()["last_snapshot"]
         request = {"snapshot_id": sample["id"], "as_of": sample["as_of"], "activity": "wait",
@@ -1117,12 +1457,17 @@ class AccountCheckTests(unittest.TestCase):
         request = self.journal_request(market_summary="Range with fading momentum.")
         self.now += timedelta(minutes=10)
         with patch.object(checker, "observe", side_effect=AssertionError("journal must not observe")), \
-                patch.object(checker, "report", side_effect=AssertionError("journal must not report risk")):
+                patch.object(checker, "report", side_effect=AssertionError("journal must not report risk")), \
+                patch.object(checker, "sync_loop", side_effect=AssertionError("journal must not synchronize financial state")), \
+                patch.object(checker, "loop_wake", side_effect=AssertionError("journal must not replan deadlines")):
             revision = self.revision
             result = self.call("journal", **request)
         self.assertFalse(result["may_dispatch"])
         self.assertEqual(result["decision"], "journal_saved")
         self.assertEqual(result["revision"], revision + 1)
+        self.assertTrue(result["may_continue"])
+        self.assertEqual(result["loop"], before["loop"])
+        self.assertEqual(result["loop_health"]["last_observation_at"], before["last_snapshot"]["as_of"])
         after = self.state()
         note = after.pop("last_journal")
         self.assertEqual(after, before)
@@ -1131,6 +1476,240 @@ class AccountCheckTests(unittest.TestCase):
         self.assertEqual(note["recorded_at"], checker.utc(self.now))
         self.assertEqual(note["account"], ACCOUNT)
         self.assertEqual(note["goal_id"], before["goal"]["id"])
+
+    def test_cached_continuation_uses_current_control_not_historical_last_result(self):
+        self.start(approval_mode="start_request")
+        self.control("start")
+        self.call("cycle", snapshot=self.snap())
+        historical = self.state()["last_result"]
+        for action in ("interrupt", "resume", "stop"):
+            self.control(action)
+            expected = action == "resume"
+            canonical = self.state()
+            self.assertEqual(canonical["last_result"], historical)
+            journal = self.call("journal", **self.journal_request())
+            self.assertEqual(journal["may_continue"], expected)
+            self.assertEqual(journal["session"], canonical["session"])
+            self.assertEqual(journal["loop"], canonical["loop"])
+            before = self.db.read_bytes()
+            for command in checker.READ_ONLY_COMMANDS:
+                result = checker.run(command, db_path=self.db, now=self.now)
+                self.assertEqual(result["may_continue"], expected)
+                self.assertFalse(result["may_dispatch"])
+                self.assertEqual(result["session"], canonical["session"])
+                self.assertEqual(result["loop"], canonical["loop"])
+            self.assertEqual(self.db.read_bytes(), before)
+
+    def test_context_is_atomic_and_recovers_resolved_strategy_after_later_reports(self):
+        self.start()
+        proposed = self.entry(risk="1.250000000001")
+        prepared = self.call("prepare", snapshot=self.snap(), action=proposed)
+        self.assertTrue(prepared["may_dispatch"])
+        self.assertNotIn("last_journal", self.state())
+        self.assertNotIn("context", prepared["intent"]["parameters"])
+        initial = checker.run("context", db_path=self.db, now=self.now)["context"]["items"][0]
+        self.assertEqual(initial["intent"]["action"]["context"], proposed["context"])
+        self.assertEqual(initial["intent"]["status"], "prepared")
+        self.assertIsNone(initial["latest_journal"])
+        self.call("resolve", snapshot=self.snap(positions=[position()]), intent_id="a1", outcome="completed",
+                  readback_verified=True, broker_tickets=["p1"], evidence_ref="synthetic:entry-filled")
+        original = checker.run("context", db_path=self.db, now=self.now)["context"]["items"][0]["intent"]["action"]
+        self.assertEqual(checker.run("status", db_path=self.db, now=self.now)["outstanding_intents"], [])
+        trail = {"version": 1, "operation": "trail", "rationale": "New confirmed higher low permits a tighter stop.",
+                 "origin_intent_id": "a1", "source_refs": ["synthetic:new-higher-low"]}
+        changed = self.call("prepare", snapshot=self.snap(positions=[position()]),
+                            action=self.reduction("trail-1", tool="synthetic_mcp.modify_sl",
+                                                  parameters={"ticket": "p1", "sl": Decimal("1.095")}, context=trail))
+        self.assertTrue(changed["may_dispatch"])
+        self.call("resolve", snapshot=self.snap(positions=[position()]), intent_id="trail-1", outcome="unknown",
+                  evidence_ref="synthetic:modify-timeout")
+        self.call("journal", **self.journal_request(intent_id="trail-1", activity="blocked",
+                                                   summary="Stop change remains unverified"))
+        for _ in range(3):
+            self.call("journal", **self.journal_request())
+        before = self.db.read_bytes()
+        page = checker.run("context", db_path=self.db, now=self.now)["context"]
+        item = page["items"][0]
+        self.assertEqual(item["intent"]["action"], original)
+        self.assertEqual(item["intent"]["action"]["risk"], "1.250000000001")
+        self.assertEqual(item["latest_action"]["id"], "trail-1")
+        self.assertEqual(item["latest_action"]["status"], "unknown")
+        self.assertEqual(item["latest_journal"]["summary"], "Stop change remains unverified")
+        related = checker.run("context", {"origin_intent_id": "a1", "limit": 1}, self.db, self.now)["context"]
+        self.assertEqual(related["origin"]["action"], original)
+        self.assertEqual(related["items"][0]["intent"]["id"], "trail-1")
+        older = checker.run("context", {"origin_intent_id": "a1", "before": related["next_cursor"]}, self.db, self.now)["context"]
+        self.assertEqual([row["intent"]["id"] for row in older["items"]], ["a1"])
+        self.assertEqual(self.db.read_bytes(), before)
+
+    def test_context_validation_blocks_new_risk_without_discarding_observed_loss(self):
+        self.start()
+        context = self.entry()["context"]
+        variants = [None, {}, dict(context, version=True), dict(context, version=2), dict(context, operation="hedge"),
+                    dict(context, rationale=""), dict(context, rationale="x" * 2001), dict(context, rationale="\x00bad"),
+                    dict(context, source_refs=[]), dict(context, source_refs=["https://private.example/token"]),
+                    dict(context, source_refs=["same", "same"]), dict(context, source_refs=[str(i) for i in range(65)]),
+                    dict(context, credential="not-allowed"), dict(context, origin_intent_id="other"),
+                    dict(context, strategy=dict(context["strategy"], budget="100")),
+                    dict(context, strategy=dict(context["strategy"], side="hold")),
+                    dict(context, strategy=dict(context["strategy"], trailing_rule=None)),
+                    dict(context, strategy=dict(context["strategy"], addition_rule=True)),
+                    dict(context, strategy=dict(context["strategy"], timeframe="H1"))]
+        for index, invalid in enumerate(variants):
+            with self.subTest(index=index):
+                result = self.call("prepare", snapshot=self.snap(), action=self.entry("invalid-" + str(index), context=invalid))
+                self.assertFalse(result["may_dispatch"])
+                self.assertTrue(result["reason_codes"])
+        self.assertEqual(checker.run("status", db_path=self.db, now=self.now)["outstanding_intents"], [])
+        disabled = copy.deepcopy(context)
+        disabled["strategy"].update({field: False for field in checker.STRATEGY_RULES})
+        self.assertEqual(checker.action_context(disabled)["strategy"]["addition_rule"], False)
+        breached = self.call("prepare", snapshot=self.snap("95", positions=[position()]), action=self.entry(context=None))
+        self.assertFalse(breached["may_dispatch"])
+        self.assertIsNotNone(self.state()["loss_latched_at"])
+        emergency = self.call("prepare", snapshot=self.snap("95", positions=[position()]), action=self.reduction(reason="loss"))
+        self.assertTrue(emergency["may_dispatch"])
+
+    def test_related_context_requires_settled_original_plan_and_matching_scope(self):
+        self.start()
+        self.call("prepare", snapshot=self.snap(), action=self.entry())
+        self.call("resolve", snapshot=self.snap(positions=[position(risk="0.1")]), intent_id="a1", outcome="completed",
+                  broker_tickets=["p1"], readback_verified=True, evidence_ref="synthetic:root-filled")
+        addition = {"version": 1, "operation": "add", "rationale": "Fresh continuation with all previous legs protected.",
+                    "origin_intent_id": "a1", "source_refs": ["synthetic:continuation"]}
+        wrong_symbol = self.call("prepare", snapshot=self.snap(), action=self.entry("wrong-symbol", symbol="GBPUSD", context=addition))
+        self.assertIn("context_origin_symbol_mismatch", wrong_symbol["reason_codes"])
+        for root in ("missing", "foreign-account", "foreign-goal", "unsettled", "legacy"):
+            if root != "missing":
+                original = checker.run("context", db_path=self.db, now=self.now)["context"]["items"][0]["intent"]["action"]
+                original = copy.deepcopy(original)
+                original["id"] = root
+                if root == "foreign-account":
+                    original["account"]["server"] = "other-broker"
+                elif root == "foreign-goal":
+                    original["goal_id"] = "old-goal"
+                elif root == "legacy":
+                    original.pop("context")
+                with closing(sqlite3.connect(self.db)) as connection, connection:
+                    connection.execute("INSERT INTO intents(id, status, payload) VALUES (?, ?, ?)",
+                                       (root, "not_executed" if root == "unsettled" else "completed", checker.encode(original)))
+            invalid = self.call("prepare", snapshot=self.snap(), action=self.entry("add-" + root, context=dict(addition, origin_intent_id=root)))
+            self.assertFalse(invalid["may_dispatch"])
+        valid = self.call("prepare", snapshot=self.snap(positions=[position(risk="0.1")]), action=self.entry("addition", risk="0.2", context=addition))
+        self.assertTrue(valid["may_dispatch"])
+        self.assertIsNone(valid["intent"]["context"]["strategy"])
+        self.call("resolve", snapshot=self.snap(), intent_id="addition", outcome="completed", readback_verified=True,
+                  broker_tickets=["p2"], evidence_ref="synthetic:add-settled")
+        chained = self.call("prepare", snapshot=self.snap(), action=self.entry("chained", context=dict(addition, origin_intent_id="addition")))
+        self.assertIn("context_origin_not_settled_entry", chained["reason_codes"])
+        with self.assertRaisesRegex(checker.CheckError, "strategy_only_on_original_entry"):
+            checker.action_context(dict(addition, strategy=self.entry()["context"]["strategy"]))
+
+    def test_management_requires_context_but_unusable_emergency_metadata_never_grants_or_blocks_authority(self):
+        self.start()
+        for context in (None, {}, {"version": 1, "operation": "close", "rationale": "Exit condition met.",
+                                   "source_refs": ["synthetic:exit"], "origin_intent_id": None}):
+            rejected = self.call("prepare", snapshot=self.snap(positions=[position()]), action=self.reduction(context=context))
+            self.assertFalse(rejected["may_dispatch"])
+        for reason, equity in (("loss", "95"), ("target", "115"), ("protection_failure", "100")):
+            fixture = AccountCheckTests()
+            fixture.setUp()
+            self.addCleanup(fixture.doCleanups)
+            fixture.start()
+            legacy = fixture.entry("legacy")
+            legacy.pop("context")
+            legacy.update(account=ACCOUNT, owner_id="synthetic-owner", created_at=checker.utc(fixture.now),
+                          snapshot_at=checker.utc(fixture.now))
+            with closing(sqlite3.connect(fixture.db)) as connection, connection:
+                connection.execute("INSERT INTO intents(id, status, payload) VALUES (?, ?, ?)",
+                                   ("legacy", "completed", checker.encode(legacy)))
+            contexts = [{}, {"version": 999}, {"version": 1, "operation": "close", "rationale": "Close exposure safely.",
+                                            "source_refs": ["synthetic:emergency"], "origin_intent_id": "legacy"},
+                        {"version": 1, "operation": "close", "rationale": "Close exposure safely.",
+                         "source_refs": ["synthetic:emergency"], "origin_intent_id": "missing"}]
+            for index, invalid in enumerate(contexts):
+                with self.subTest(reason=reason, index=index):
+                    action = fixture.reduction("emergency-" + str(index), reason=reason, context=invalid)
+                    denied = fixture.call("prepare", snapshot=fixture.snap(equity, positions=[position()]),
+                                          action=dict(action, tool_permission=False))
+                    self.assertFalse(denied["may_dispatch"])
+                    self.assertIn("missing_tool_permission", denied["reason_codes"])
+                    result = fixture.call("prepare", snapshot=fixture.snap(equity, positions=[position()]), action=action)
+                    self.assertTrue(result["may_dispatch"])
+                    self.assertIn("action_context_unavailable", result["reason_codes"])
+                    self.assertTrue(result["intent"]["context_warning"])
+                    self.assertNotIn("context", result["intent"])
+                    self.assertEqual(result["intent"]["parameters"], action["parameters"])
+                    fixture.call("resolve", snapshot=fixture.snap(equity, positions=[position()]),
+                                 intent_id=action["id"], outcome="not_executed", readback_verified=True,
+                                 evidence_ref="synthetic:terminal-rejection")
+
+    def test_context_pages_are_scoped_bounded_and_read_only_including_legacy_versions(self):
+        with patch.object(sqlite3, "connect", side_effect=AssertionError("absent read must not open SQLite")):
+            absent = checker.run("context", db_path=self.db, now=self.now)
+        self.assertEqual(absent["decision"], "unconfigured")
+        self.assertFalse(absent["may_continue"])
+        self.assertFalse(self.db.exists())
+        self.start()
+        for entry_id in ("first", "second", "third"):
+            self.call("prepare", snapshot=self.snap(), action=self.entry(entry_id))
+            self.call("resolve", snapshot=self.snap(), intent_id=entry_id, outcome="completed", readback_verified=True,
+                      broker_tickets=["ticket-" + entry_id], evidence_ref="synthetic:settled-" + entry_id)
+        before = self.db.read_bytes()
+        ids, cursor = [], None
+        while True:
+            page = checker.run("context", {"before": cursor, "limit": 1}, self.db, self.now)["context"]
+            ids.extend(row["intent"]["id"] for row in page["items"])
+            if page["next_cursor"] is None:
+                break
+            self.assertTrue(cursor is None or page["next_cursor"] < cursor)
+            cursor = page["next_cursor"]
+        self.assertEqual(ids, ["third", "second", "first"])
+        for invalid in ({"limit": 0}, {"limit": 101}, {"limit": True}, {"before": 0}, {"before": True},
+                        {"before": 9223372036854775808}, {"account": ACCOUNT}, {"owner_id": "other"},
+                        {"origin_intent_id": "missing"}):
+            with self.subTest(invalid=invalid), self.assertRaises(checker.CheckError):
+                checker.run("context", invalid, self.db, self.now)
+        self.assertEqual(self.db.read_bytes(), before)
+        for version in (1, 2, 3, 4, 5):
+            with closing(sqlite3.connect(self.db)) as connection, connection:
+                connection.execute("PRAGMA user_version = " + str(version))
+            before = self.db.read_bytes()
+            self.assertEqual(len(checker.run("context", db_path=self.db, now=self.now)["context"]["items"]), 3)
+            self.assertEqual(self.db.read_bytes(), before)
+        with patch.multiple(checker, SCHEMA_VERSION=4, READABLE_SCHEMA_VERSIONS=(1, 2, 3, 4)), \
+                self.assertRaisesRegex(checker.CheckError, "unsupported_schema"):
+            checker.run("check", {"owner_id": "synthetic-owner", "expected_revision": self.revision,
+                                  "snapshot": self.snap()}, self.db, self.now)
+        self.assertEqual(self.db.read_bytes(), before)
+        self.draft(budget="5", target="20", mandate=MANDATE)
+        self.activate_again("new_goal")
+        self.assertEqual(checker.run("context", db_path=self.db, now=self.now)["context"]["items"], [])
+        with self.assertRaisesRegex(checker.CheckError, "context_origin_not_found"):
+            checker.run("context", {"origin_intent_id": "first"}, self.db, self.now)
+
+    def test_context_cli_needs_no_stdin_and_legacy_upgrade_never_invents_a_plan(self):
+        self.start()
+        self.call("prepare", snapshot=self.snap(), action=self.entry())
+        self.call("resolve", snapshot=self.snap(), intent_id="a1", outcome="completed", readback_verified=True,
+                  broker_tickets=["pending-1"], evidence_ref="synthetic:pending-accepted")
+        with closing(sqlite3.connect(self.db)) as connection, connection:
+            action = checker.decode(connection.execute("SELECT payload FROM intents WHERE id='a1'").fetchone()[0], exact_numbers=False)
+            action.pop("context")
+            connection.execute("UPDATE intents SET payload = ? WHERE id='a1'", (checker.encode(action),))
+            connection.execute("PRAGMA user_version = 4")
+        before = self.db.read_bytes()
+        command = [sys.executable, "-B", checker.__file__, "context", "--db", str(self.db), "--limit", "1", "--origin-intent-id", "a1"]
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, cwd=self.temp.name, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        readback = json.loads(result.stdout)
+        self.assertNotIn("context", readback["context"]["origin"]["action"])
+        self.assertFalse(readback["may_dispatch"])
+        self.assertEqual(self.db.read_bytes(), before)
+        self.call("journal", **self.journal_request())
+        with closing(sqlite3.connect(self.db)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(checker.decode(connection.execute("SELECT payload FROM intents WHERE id='a1'").fetchone()[0], exact_numbers=False), action)
 
     def test_journal_cannot_create_or_activate_state(self):
         request = {"snapshot_id": "missing", "as_of": checker.utc(self.now)}
@@ -1217,7 +1796,7 @@ class AccountCheckTests(unittest.TestCase):
         after.pop("last_journal")
         self.assertEqual(after, before)
         with closing(sqlite3.connect(self.db)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], checker.SCHEMA_VERSION)
 
     def test_display_history_captures_final_accepted_results_not_stale_metrics(self):
         activated = self.start()

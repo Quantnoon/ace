@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import {
   isDecimal, decimalSign, formatDecimal, formatMoney, formatPercent, formatCount,
   formatTimestamp, sourceFreshness, scopeKey, approvedAmounts, canonicalStatus, progressFill,
-  intentStatus, journalForScope, mergeActivity, isDashboardResponse, mergeDashboardPage,
+  intentStatus, contextForIntent, journalForScope, mergeActivity, isDashboardResponse, mergeDashboardPage,
   pollDelay, ACTIVITY_PREVIEW_SIZE, DashboardController,
 } from "../ui/dashboard.mjs";
 
@@ -24,6 +24,7 @@ function fixture() {
     metrics: { budget: "250.00", target: "500.000", balance: "100000.00", equity: "100080.05", peak: "100100.00", drawdown: "19.95", remaining_risk: "230.05", account_stop_floor: "99850.00", estimated_goal_gain: "80.00", progress_pct: "16.000", remaining_target: "420.000", remaining_close_costs: "0.05", existing_risk: "20.00", free_margin: "80000.00", final_net: null, final_shortfall: null },
     result: { decision: "within_budget", reason_codes: [], closure_verified: false, required_action: "none", last_verified_at: OBSERVED },
     stops: { loss_latched_at: null, target_latched_at: null, target_trigger_gain: null, closure_verified: false },
+    session: null,
     loop: { id: "loop-1", status: "active", cycles: 2, timeframe: "M15", last_cycle_at: OBSERVED,
       next_cycle_at: "2026-11-04T12:15:05Z", next_latch_check_at: "2026-11-04T12:05:02Z",
       next_wake_at: "2026-11-04T12:05:02Z", wake_reason: "latch_check", max_gap_seconds: 901, end_reason: null,
@@ -36,10 +37,24 @@ function fixture() {
       details: { order_type: "buy_limit", side: "buy", volume_initial: "0.20", volume_remaining: "0.10", volume_unit: "lots", entry_price: "1.01001", stop_limit_price: null, stop_loss: "0.99001", take_profit: null, placed_at: OBSERVED, expires_at: null, ownership: "manual", unset_fields: ["stop_limit_price", "take_profit", "expires_at"] } }],
     unresolved_intents: { count: 1, items: [{ id: "request-001", kind: "entry", status: "unknown", symbol: "SYNTH", tickets: [], risk: "10.0001", created_at: OBSERVED, snapshot_at: OBSERVED, outcome: { outcome: "unknown", at: GENERATED, snapshot_at: OBSERVED, broker_tickets: [] } }] },
     latest_journal: { version: 1, activity: "wait", summary: "Wait for a closed candle", reason: "No independent entry is supported.", next_step: "Reassess after the next recorded candle.", market_summary: "Range-bound synthetic fixture.", risk_summary: "Existing exposure included.", invalidation: "A close below the range.", symbols: ["SYNTH"], source_refs: ["synthetic-bars-1"], intent_id: null, snapshot_id: "sample-1", as_of: OBSERVED, recorded_at: GENERATED, policy_id: "policy-a", goal_id: "goal-a" },
+    strategies: { items: [], next_cursor: null },
     activity: { items: [{ id: 12, command: "check", at: GENERATED, snapshot_at: OBSERVED, decision: "within_budget", reason_codes: [], closure_verified: false, journal: null, intent: null }], next_cursor: 12 },
     progress: { points: [{ event_id: 12, snapshot_id: "sample-1", as_of: OBSERVED, gain: "80.00", pct: "16.000", target: "500.000", x: 0.5, y: 0.84, gap_before: false, legacy: false }], target_y: 0, zero_y: 1, min_pct: "0", max_pct: "100", incomplete: false, from: OBSERVED, to: OBSERVED, next_cursor: null },
     warnings: [],
   };
+}
+
+function strategyFixture(id = "idea-1") {
+  const intent = { id, kind: "entry", status: "completed", symbol: "SYNTH", tickets: [], risk: "10.0001",
+    created_at: OBSERVED, snapshot_at: OBSERVED, outcome: { outcome: "completed", at: GENERATED, snapshot_at: GENERATED, broker_tickets: ["pending-1"] },
+    context: { version: 1, operation: "entry", rationale: "Range breakout with a fixed allocation.", source_refs: ["synthetic:closed-bars"], origin_intent_id: null,
+      strategy: { name: `Range breakout ${id}`, thesis: "A closed candle held above the range.", side: "buy", timeframe: "M15", invalidation: "Close back inside the range.",
+        expiry_rule: "Cancel before the session ends.", breakeven_rule: "Protect costs after one risk unit.", trailing_rule: "Tighten behind closed candles.", addition_rule: false } } };
+  const latest_action = { id: `trail-${id}`, kind: "reduce", status: "unknown", symbol: "SYNTH", tickets: ["pending-1"], risk: "0",
+    created_at: GENERATED, snapshot_at: GENERATED, outcome: { outcome: "unknown", at: GENERATED, snapshot_at: GENERATED, broker_tickets: [] },
+    context: { version: 1, operation: "trail", rationale: "Tighten the stop; broker readback is pending.", source_refs: ["synthetic:stop-read"], origin_intent_id: id, strategy: null } };
+  return { intent, latest_action, latest_journal: { ...fixture().latest_journal, intent_id: latest_action.id,
+    activity: "management", summary: "Stop update remains unverified", reason: "Do not infer protection from submission." } };
 }
 
 test("exact decimal formatting does not pass money through floating point", () => {
@@ -408,12 +423,21 @@ test("markup and code use local assets, safe text APIs and accessible alternativ
   assert.match(html, /id="target-progress"[^>]+role="progressbar"/);
   assert.match(html, /id="target-progress-ring"/);
   assert.match(html, /id="progress-exact"/);
+  assert.match(html, /<details class="disclosure target-details">[\s\S]*?<\/details>\s*<p id="active-draft-note"[^>]*>[^<]*<\/p>\s*<section class="decision-section"/);
+  assert.ok(html.indexOf('id="decision-heading"') < html.indexOf('id="risk-heading"'));
   assert.match(html, /id="activity-toggle"[^>]+aria-controls="activity-list"[^>]+aria-expanded="false"/);
+  assert.match(html, /id="strategies"[^>]+aria-labelledby="strategies-heading"/);
+  assert.match(html, /id="strategies-more"[^>]+aria-controls="strategies-list"/);
   assert.match(html, /<h2 id="intents-heading">Unresolved requests<\/h2>/);
   assert.ok(html.indexOf('id="intents-heading"') > html.indexOf('id="activity-heading"'));
   assert.doesNotMatch(html, /id="orders"|id="order-filter"|id="orders-list"|>Orders<|observation-table|progress-chart/);
   assert.match(css, /stroke-dashoffset 900ms/);
+  assert.match(css, /\.target-progress-ring\s*\{[^}]*stroke:\s*var\(--line-soft\)/);
+  assert.match(css, /\.target-progress\[data-tone="positive"\] \.target-progress-ring\s*\{[^}]*stroke:\s*var\(--green\)/);
+  assert.match(css, /\.target-progress\[data-tone="danger"\] \.target-progress-track,\s*\.target-progress\[data-tone="danger"\] \.target-progress-ring\s*\{[^}]*stroke:\s*var\(--red\)/);
   assert.match(css, /@media \(max-width: 920px\)[\s\S]*?\.overview-grid \{ grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /\.strategy-context \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.strategy-context \{ grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /prefers-reduced-motion/);
   assert.match(css, /:focus-visible/);
 });
@@ -471,6 +495,7 @@ test("target donut animates only changed saved progress and keeps exact semantic
   assert.equal(doc.getElementById("progress-exact").textContent, "+16.000%");
   assert.equal(progress.getAttribute("aria-valuenow"), "16");
   assert.equal(progress.getAttribute("aria-valuetext"), "+16.000% toward the approved target");
+  assert.equal(progress.dataset.tone, "positive");
   assert.equal(ring.getAttribute("stroke-dashoffset"), "84");
   const writes = ring.attributeWrites.get("stroke-dashoffset");
   payload.revision += 1;
@@ -483,8 +508,18 @@ test("target donut animates only changed saved progress and keeps exact semantic
   assert.equal(doc.getElementById("progress-exact").textContent, "+124.000000000001%");
   assert.equal(progress.getAttribute("aria-valuenow"), "100");
   assert.match(progress.getAttribute("aria-valuetext"), /\+124\.000000000001%/);
+  assert.equal(progress.dataset.tone, "positive");
   assert.equal(ring.getAttribute("stroke-dashoffset"), "0");
   assert.equal(doc.getElementById("canonical-state").textContent, "Within budget at last check");
+  for (const [value, tone] of [["-16.000", "danger"], ["-0.0000000000001", "danger"], ["0", "neutral"], ["-0.000", "neutral"]]) {
+    payload.revision += 1;
+    payload.metrics.progress_pct = value;
+    await controller.request();
+    assert.equal(progress.dataset.tone, tone);
+    assert.equal(progress.getAttribute("aria-valuenow"), "0");
+    assert.equal(ring.getAttribute("stroke-dashoffset"), "100");
+    assert.equal(doc.getElementById("progress-exact").textContent, `${value}%`);
+  }
   payload.revision += 1;
   payload.metrics.progress_pct = null;
   await controller.request();
@@ -492,6 +527,7 @@ test("target donut animates only changed saved progress and keeps exact semantic
   assert.equal(doc.getElementById("progress-exact").textContent, "Unavailable");
   assert.equal(progress.getAttribute("aria-valuenow"), null);
   assert.equal(progress.getAttribute("aria-valuetext"), "Target progress unavailable");
+  assert.equal(progress.dataset.tone, "muted");
   assert.equal(ring.getAttribute("stroke-dashoffset"), "100");
 });
 
@@ -792,6 +828,153 @@ test("active, closing and closed financial loops never verify current execution"
   assert.equal(doc.getElementById("loop-end").textContent, "target latch");
 });
 
+test("session control is distinct from financial settlement and never proves execution", async (context) => {
+  const payload = fixture();
+  payload.session = { id: "session-1", status: "active", started_at: OBSERVED, updated_at: GENERATED,
+    reason: "User requested trading until stopped.", execution: "running" };
+  const { doc, controller } = setup(context, async () => response(payload));
+  await controller.request();
+  assert.equal(doc.getElementById("session-status").textContent, "Continue requested");
+  assert.equal(doc.getElementById("session-phase").textContent, "Trading / management");
+  assert.equal(doc.getElementById("loop-execution").textContent, "Unverified");
+  assert.equal(doc.getElementById("session-started").dateTime, OBSERVED);
+  assert.equal(doc.getElementById("session-updated").dateTime, GENERATED);
+  assert.equal(doc.getElementById("session-next-wake").dateTime, payload.loop.next_wake_at);
+  payload.stops.target_latched_at = OBSERVED;
+  payload.loop.status = "closing";
+  payload.loop.wake_reason = "closure";
+  await controller.request();
+  assert.equal(doc.getElementById("session-phase").textContent, "Closure / reconciliation");
+  payload.stops.closure_verified = true;
+  payload.loop.status = "closed";
+  payload.loop.wake_reason = "monitor";
+  await controller.request();
+  assert.equal(doc.getElementById("session-status").textContent, "Continue requested");
+  assert.equal(doc.getElementById("session-phase").textContent, "Stopped monitoring / no new risk");
+  assert.equal(doc.getElementById("session-wake-reason").textContent, "Stopped-account observation");
+  assert.equal(doc.getElementById("loop-wake-reason").textContent, "Stopped-account observation");
+  assert.equal(doc.getElementById("canonical-state").textContent, "Target stop latched");
+  assert.match(doc.getElementById("status-announcement").textContent, /execution unverified/);
+});
+
+test("action context recognizes explicit operations and disabled rules, not legacy guesses", () => {
+  const { intent, latest_action } = strategyFixture();
+  assert.equal(contextForIntent(intent), intent.context);
+  assert.equal(contextForIntent(intent).strategy.addition_rule, false);
+  for (const operation of ["add", "breakeven", "trail", "close", "cancel"]) {
+    const action = { ...latest_action, kind: operation === "add" ? "entry" : "reduce", context: { ...latest_action.context, operation } };
+    assert.equal(contextForIntent(action).operation, operation);
+  }
+  for (const context of [undefined, null, false, {}, { ...intent.context, version: 2 }, { ...intent.context, operation: "__proto__" },
+    { ...intent.context, rationale: " " }, { ...intent.context, source_refs: [] }, { ...intent.context, origin_intent_id: false },
+    { ...intent.context, strategy: { ...intent.context.strategy, trailing_rule: null } },
+    { ...intent.context, strategy: { ...intent.context.strategy, timeframe: "unknown" } }]) assert.equal(contextForIntent({ ...intent, context }), null);
+  assert.equal(contextForIntent({ ...latest_action, kind: "entry" }), null);
+  assert.equal(contextForIntent({ ...latest_action, context: { ...latest_action.context, origin_intent_id: null } }), null);
+  assert.equal(contextForIntent({ ...latest_action, context: { ...latest_action.context, operation: "close", origin_intent_id: null } }).operation, "close");
+});
+
+test("strategy pages append without duplicates only within a single saved revision", () => {
+  const first = fixture();
+  first.strategies = { items: [strategyFixture("idea-3"), strategyFixture("idea-2")], next_cursor: 2 };
+  let state = mergeDashboardPage(null, first);
+  const older = fixture();
+  older.strategies = { items: [strategyFixture("idea-2"), strategyFixture("idea-1")], next_cursor: null };
+  state = mergeDashboardPage(state, older, { strategyBefore: 2 });
+  assert.deepEqual(state.strategies.map((item) => item.intent.id), ["idea-3", "idea-2", "idea-1"]);
+  assert.equal(state.strategyCursor, null);
+  state = mergeDashboardPage(state, first);
+  assert.equal(state.strategies.length, 3);
+  assert.equal(state.strategyCursor, null);
+  const updated = structuredClone(first);
+  updated.revision += 1;
+  updated.strategies.items[1].latest_journal.reason = "New saved assessment";
+  state = mergeDashboardPage(state, updated);
+  assert.deepEqual(state.strategies.map((item) => item.intent.id), ["idea-3", "idea-2"]);
+  assert.equal(state.strategies[1].latest_journal.reason, "New saved assessment");
+  assert.equal(state.strategyCursor, 2);
+  assert.equal(state.strategiesNeedRefresh, false);
+});
+
+test("strategy pages reject stale cursors and discard scope or revision races", () => {
+  const first = fixture();
+  first.strategies = { items: [strategyFixture()], next_cursor: 20 };
+  const previous = mergeDashboardPage(null, first);
+  const older = structuredClone(first);
+  older.strategies = { items: [strategyFixture("older")], next_cursor: null };
+  assert.equal(mergeDashboardPage(previous, older, { strategyBefore: 19 }), previous);
+  assert.equal(mergeDashboardPage(previous, older, { strategyBefore: 20, requestId: 1, latestRequestId: 2 }), previous);
+  for (const change of [
+    (data) => { data.revision += 1; },
+    (data) => { data.account.login = "another-account"; },
+    (data) => { data.scope.goal_id = "another-goal"; },
+    (data) => { data.scope.policy_id = "another-policy"; },
+  ]) {
+    const changed = structuredClone(older);
+    change(changed);
+    const state = mergeDashboardPage(previous, changed, { strategyBefore: 20 });
+    assert.equal(state.strategies, null);
+    assert.equal(state.strategyCursor, null);
+    assert.equal(state.strategiesNeedRefresh, true);
+    assert.equal(state.data.metrics.estimated_goal_gain, first.metrics.estimated_goal_gain);
+  }
+  older.revision -= 1;
+  assert.equal(mergeDashboardPage(previous, older, { strategyBefore: 20 }), previous);
+  const gone = mergeDashboardPage(previous, { ...fixture(), status: "unconfigured", account: null, scope: null, revision: 0 });
+  assert.equal(gone.strategies, null);
+  assert.equal(gone.strategyCursor, null);
+});
+
+test("stop and interruption notes stay visible without freshening financial evidence", async (context) => {
+  let now = NOW;
+  const payload = fixture();
+  payload.session = { id: "session-1", status: "stopped", started_at: OBSERVED, updated_at: GENERATED,
+    reason: "<img src=x onerror=alert(1)> user stop", execution: "unverified" };
+  payload.loop.next_wake_at = null;
+  payload.loop.wake_reason = null;
+  const { doc, controller } = setup(context, async () => response(payload), () => now);
+  await controller.request();
+  assert.equal(doc.getElementById("session-status").textContent, "User stop recorded");
+  assert.equal(doc.getElementById("session-phase").textContent, "Routine trading disabled");
+  assert.equal(doc.getElementById("session-reason").textContent, payload.session.reason);
+  assert.equal(doc.getElementById("session-next-wake").textContent, "Unavailable");
+  assert.equal(doc.getElementById("canonical-state").textContent, "Within budget at last check");
+  assert.match(doc.getElementById("closure-state").textContent, /No verified account closure/);
+  now += 600000;
+  payload.session.status = "interrupted";
+  payload.session.updated_at = new Date(now).toISOString();
+  await controller.request();
+  assert.equal(doc.getElementById("session-status").textContent, "Interruption recorded");
+  assert.equal(doc.getElementById("source-badge").textContent, "Stale observation");
+  assert.equal(doc.getElementById("source-time").dateTime, OBSERVED);
+  payload.session.status = "active";
+  payload.loop.next_wake_at = GENERATED;
+  payload.loop.wake_reason = "session_check";
+  await controller.request();
+  assert.equal(doc.getElementById("session-wake-reason").textContent, "Fresh session observation");
+  assert.equal(doc.getElementById("loop-execution").textContent, "Unverified");
+});
+
+test("session activity is explanation-only and missing session data remains unavailable", async (context) => {
+  const payload = fixture();
+  payload.activity.items = [{ id: 12, command: "session", at: GENERATED, snapshot_at: null, decision: "session_saved",
+    reason_codes: [], closure_verified: false, journal: null, intent: null,
+    session: { id: "session-1", status: "stopped", reason: "User ended this task; broker exposure is unchanged." } }];
+  const { doc, controller } = setup(context, async () => response(payload));
+  await controller.request();
+  assert.match(doc.getElementById("activity-list").textContent, /User stop recorded/);
+  assert.match(doc.getElementById("activity-list").textContent, /broker exposure is unchanged/);
+  assert.match(doc.getElementById("activity-list").textContent, /No broker observation, closure or current client execution/);
+  assert.equal(doc.getElementById("session-status").textContent, "Not recorded");
+  assert.equal(doc.getElementById("session-phase").textContent, "Legacy / bounded workflow");
+  for (const session of [null, false, {}, { status: "running" }]) {
+    payload.session = session;
+    await controller.request();
+    assert.equal(doc.getElementById("session-status").textContent, "Not recorded");
+    assert.equal(doc.getElementById("session-id").textContent, "Unavailable");
+  }
+});
+
 test("legacy and malformed loop telemetry stays unavailable, not zero or cycle-derived", async (context) => {
   const payload = fixture();
   payload.loop = { id: "legacy-loop", status: "active", cycles: 3, timeframe: "M15",
@@ -909,6 +1092,61 @@ test("reader error before first data remains unavailable without zero-filled fal
   assert.doesNotMatch(doc.getElementById("reader-error").textContent, /private detail/);
 });
 
+test("unsupported schema explains viewer-only recovery while retaining evidence and retry behavior", async (context) => {
+  for (const retained of [false, true]) {
+    await context.test(retained ? "last-known data" : "first read", async (context) => {
+      let now = NOW;
+      let failed = false;
+      const calls = [];
+      const { doc, controller } = setup(context, async (url, options) => {
+        calls.push({ url, method: options.method });
+        return response(failed ? { ok: false, status: "unavailable", error: "unsupported_schema", generated_at: GENERATED } : fixture(), !failed);
+      }, () => now);
+      if (retained) await controller.request();
+      const previous = controller.state;
+      const successfulAt = controller.successfulAt;
+      failed = true;
+      now += 60000;
+      await controller.request();
+      assert.equal(controller.state, previous);
+      assert.equal(controller.error, "unsupported_schema");
+      assert.equal(controller.successfulAt, successfulAt);
+      assert.equal(controller.failures, 1);
+      assert.notEqual(controller.timer, null);
+      const message = doc.getElementById("reader-error").textContent;
+      assert.match(message, /format is not supported by this viewer/);
+      assert.match(message, /older Python viewer may still be running/);
+      assert.match(message, /Browser refresh does not reload it/);
+      assert.match(message, /if outdated, restart only the matching viewer/);
+      assert.match(message, /Leave the checkpoint and trading agent unchanged/);
+      if (retained) {
+        assert.match(message, /last-known saved data/);
+        assert.equal(doc.getElementById("source-time").dateTime, OBSERVED);
+        assert.equal(doc.getElementById("net-gain").textContent, "+80.00 USD cents");
+        assert.match(doc.getElementById("source-badge").textContent, /Last-known \/ Stale observation/);
+      } else {
+        assert.match(message, /unknown values are not zero/);
+        assert.equal(doc.getElementById("account-login").textContent, "Unavailable");
+        assert.equal(doc.getElementById("source-time").textContent, "Unavailable");
+        assert.equal(doc.getElementById("configured-workspace").hidden, true);
+      }
+      await controller.request();
+      assert.equal(controller.failures, 2);
+      assert.equal(pollDelay(false, controller.failures), 20000);
+      failed = false;
+      now += 1000;
+      await controller.request();
+      assert.equal(controller.error, null);
+      assert.equal(controller.failures, 0);
+      assert.equal(doc.getElementById("reader-error").hidden, true);
+      assert.equal(doc.getElementById("source-time").dateTime, OBSERVED);
+      assert.equal(doc.getElementById("source-badge").textContent, "Stale observation");
+      assert.equal(doc.getElementById("configured-workspace").hidden, false);
+      assert.ok(calls.every(({ url, method }) => url === "/api/dashboard" && method === "GET"));
+    });
+  }
+});
+
 test("unknown order counts, progress and intents remain unavailable", async (context) => {
   const payload = fixture();
   payload.pending_orders = null;
@@ -1008,5 +1246,297 @@ test("stopping aborts the read and prevents a late async result from changing th
   pending.resolve(response(fixture()));
   await request;
   assert.equal(controller.state, null);
+  assert.equal(controller.inFlight, null);
+});
+
+test("recorded strategies show fixed allocation, explicit actions and inert source-bound evidence", async (context) => {
+  const payload = fixture();
+  const item = strategyFixture();
+  const malicious = '<img src="x" onerror="alert(1)">';
+  item.intent.context.strategy.name = malicious;
+  item.intent.context.strategy.thesis = "<script>not executable</script>";
+  item.intent.context.source_refs = ["javascript:alert(1)"];
+  item.latest_action.context.rationale = malicious;
+  item.intent.parameters = { secret: "private-parameters" };
+  item.latest_action.evidence_ref = "private-receipt";
+  payload.strategies = { items: [item], next_cursor: null };
+  payload.unresolved_intents.items = [item.latest_action];
+  payload.activity.items[0] = { ...payload.activity.items[0], command: "prepare", decision: "prepared",
+    intent: { ...item.latest_action, status: "completed" } };
+  payload.stops.loss_latched_at = OBSERVED;
+  const { doc, controller } = setup(context, async () => response(payload));
+  await controller.request();
+  const rows = doc.getElementById("strategies-list");
+  assert.equal(rows.children.length, 1);
+  assert.match(rows.textContent, /Fixed original risk allocation10\.0001 USD cents/);
+  assert.match(rows.textContent, /Stressed risk0 USD cents/);
+  assert.match(rows.textContent, /Addition ruleDisabled in original plan/);
+  assert.match(rows.textContent, /Plan source observed2026-11-04 12:00:00 UTC/);
+  assert.match(rows.textContent, /Assessment recorded at2026-11-04 12:00:20 UTC/);
+  assert.match(rows.textContent, /Outcome source time2026-11-04 12:00:20 UTC/);
+  assert.match(rows.textContent, /Trailing stop/);
+  assert.match(rows.textContent, /javascript:alert\(1\)/);
+  assert.ok(rows.textContent.includes(malicious));
+  assert.doesNotMatch(rows.textContent, /private-parameters|private-receipt/);
+  const tags = (node) => [node.tagName, ...node.children.flatMap(tags)];
+  assert.ok(!tags(rows).some((tag) => ["img", "script", "a", "iframe"].includes(tag)));
+  assert.match(doc.getElementById("activity-list").textContent, /Current request status at page read: Settled request/);
+  assert.match(doc.getElementById("activity-list").textContent, /not the outcome at this historical event/);
+  assert.match(doc.getElementById("intents-list").textContent, /Recorded operationTrailing stop/);
+  assert.match(doc.getElementById("intents-list").textContent, /Original entry IDidea-1/);
+  assert.ok(doc.getElementById("intents-list").textContent.includes(malicious));
+  assert.equal(doc.getElementById("canonical-state").textContent, "Loss stop latched");
+  assert.equal(doc.getElementById("net-gain").textContent, "+80.00 USD cents");
+  assert.equal(doc.getElementById("pending-count").textContent, "1");
+  assert.match(html, /not live exposure or current ownership/);
+  assert.match(html, /unfilled pending order/);
+});
+
+test("legacy and malformed strategy context never infer rules or unrelated assessments", async (context) => {
+  const payload = fixture();
+  const item = strategyFixture();
+  item.intent.context = null;
+  item.latest_action = null;
+  delete item.latest_journal;
+  payload.latest_journal.summary = "Unrelated same-symbol report";
+  payload.strategies = { items: [item], next_cursor: null };
+  payload.stops.loss_latched_at = OBSERVED;
+  const { doc, controller } = setup(context, async () => response(payload));
+  await controller.request();
+  const rows = doc.getElementById("strategies-list");
+  assert.match(rows.textContent, /Original strategy unavailable/);
+  assert.match(rows.textContent, /Trailing ruleUnavailable/);
+  assert.doesNotMatch(rows.textContent, /Disabled in original plan|Unrelated same-symbol report/);
+  const unsupported = strategyFixture();
+  unsupported.intent.context.version = 999;
+  unsupported.latest_action.context.origin_intent_id = "another-idea";
+  unsupported.latest_journal.goal_id = "old-goal";
+  payload.strategies.items = [unsupported];
+  await controller.request();
+  assert.match(rows.textContent, /Original strategy unavailable/);
+  assert.match(rows.textContent, /Linked action unavailable/);
+  assert.match(rows.textContent, /No supported linked assessment/);
+  assert.match(doc.getElementById("warnings").textContent, /action context is unavailable/);
+  assert.equal(doc.getElementById("canonical-state").textContent, "Loss stop latched");
+});
+
+test("malformed or unsafe strategy pages cannot break canonical financial rendering", async (context) => {
+  const payload = fixture();
+  payload.stops.loss_latched_at = OBSERVED;
+  const { doc, controller } = setup(context, async () => response(payload));
+  for (const page of [undefined, null, [], { items: "bad", next_cursor: null }, { items: [null], next_cursor: null },
+    { items: [], next_cursor: "2" }, { items: [], next_cursor: -1 }, { items: [], next_cursor: Number.MAX_SAFE_INTEGER + 1 },
+    { items: Array.from({ length: 21 }, (_, index) => strategyFixture(`idea-${index}`)), next_cursor: null }]) {
+    payload.strategies = page;
+    await controller.request();
+    assert.equal(controller.error, null);
+    assert.equal(controller.state.strategies, null);
+    assert.equal(doc.getElementById("strategies-list").children.length, 0);
+    assert.equal(doc.getElementById("strategies-more").hidden, true);
+    assert.match(doc.getElementById("strategies-empty").textContent, /unavailable/);
+    assert.equal(doc.getElementById("canonical-state").textContent, "Loss stop latched");
+    assert.equal(doc.getElementById("net-gain").textContent, "+80.00 USD cents");
+  }
+});
+
+test("unchanged strategy polls preserve native expanded rows and focus", async (context) => {
+  let payload = fixture();
+  payload.strategies = { items: [strategyFixture()], next_cursor: null };
+  const { doc, controller } = setup(context, async () => response(payload));
+  await controller.request();
+  const row = controller.view.rowCaches.get("strategies-list").get("idea-1");
+  row.details.open = true;
+  row.summary.focus();
+  const replacements = row.summary.replacements;
+  payload = structuredClone(payload);
+  payload.revision += 1;
+  payload.generated_at = "2026-11-04T12:00:25Z";
+  await controller.request();
+  assert.equal(row.summary.replacements, replacements);
+  assert.equal(row.details.open, true);
+  assert.equal(doc.activeElement, row.summary);
+  payload.strategies.items[0].latest_journal.summary = "Later linked assessment";
+  await controller.request();
+  assert.equal(row.details.open, true);
+  assert.equal(doc.activeElement, row.summary);
+  assert.match(row.summary.textContent, /Later linked assessment/);
+});
+
+test("strategy pagination loads exactly one bounded page per user action", async (context) => {
+  const first = fixture();
+  first.strategies = { items: [strategyFixture("idea-20"), strategyFixture("idea-10")], next_cursor: 10 };
+  const older = { ...fixture(), strategies: { items: [strategyFixture("idea-5")], next_cursor: 5 } };
+  const last = { ...fixture(), strategies: { items: [strategyFixture("idea-1")], next_cursor: null } };
+  const pages = new Map([["/api/dashboard", first], ["/api/dashboard?strategy_before=10", older], ["/api/dashboard?strategy_before=5", last]]);
+  const calls = [];
+  const { doc, controller } = setup(context, async (url, options) => {
+    calls.push(url);
+    assert.equal(options.method, "GET");
+    return response(structuredClone(pages.get(url)));
+  });
+  await controller.request();
+  assert.equal(calls.length, 1);
+  assert.equal(doc.getElementById("strategies-more").hidden, false);
+  controller.onStrategiesMore();
+  await flush();
+  assert.deepEqual(calls, ["/api/dashboard", "/api/dashboard?strategy_before=10"]);
+  assert.equal(controller.state.strategies.length, 3);
+  assert.equal(controller.state.strategyCursor, 5);
+  await controller.request(null, 10);
+  await controller.request(12, 5);
+  await controller.request(null, "5");
+  assert.equal(calls.length, 2);
+  doc.hidden = true;
+  controller.onStrategiesMore();
+  assert.equal(calls.length, 2);
+  doc.hidden = false;
+  controller.onStrategiesMore();
+  await flush();
+  assert.equal(calls.length, 3);
+  assert.equal(controller.state.strategies.length, 4);
+  assert.equal(doc.getElementById("strategies-more").hidden, true);
+  assert.equal(doc.getElementById("activity-list").children.length, 1);
+});
+
+test("strategy reads serialize with refresh and existing activity-history requests", async (context) => {
+  const pending = deferred();
+  const first = fixture();
+  first.strategies = { items: [strategyFixture("idea-10")], next_cursor: 10 };
+  const older = { ...fixture(), strategies: { items: [strategyFixture("idea-5")], next_cursor: 5 } };
+  const history = structuredClone(first);
+  history.activity = { items: [{ ...first.activity.items[0], id: 11 }], next_cursor: null };
+  const calls = [];
+  let active = 0;
+  let maxActive = 0;
+  const { doc, controller } = setup(context, async (url) => {
+    calls.push(url);
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    try {
+      if (url.includes("strategy_before")) return await pending.promise;
+      return response(structuredClone(url.includes("?before") ? history : first));
+    } finally { active -= 1; }
+  });
+  await controller.request();
+  const loading = controller.request(null, 10);
+  controller.onStrategiesMore();
+  controller.onActivityToggle();
+  await controller.request();
+  await controller.request(12);
+  assert.equal(calls.length, 2);
+  assert.equal(doc.getElementById("strategies-more").disabled, true);
+  assert.equal(doc.getElementById("strategies-list").getAttribute("aria-busy"), "true");
+  assert.equal(doc.getElementById("activity-list").getAttribute("aria-busy"), "false");
+  pending.resolve(response(older));
+  await loading;
+  for (let count = 0; count < 3; count += 1) await flush();
+  assert.deepEqual(calls, ["/api/dashboard", "/api/dashboard?strategy_before=10", "/api/dashboard", "/api/dashboard?before=12"]);
+  assert.equal(maxActive, 1);
+  assert.equal(controller.state.strategies.length, 2);
+  assert.equal(controller.state.activity.length, 2);
+  assert.equal(controller.state.strategyCursor, 5);
+  assert.equal(doc.getElementById("strategies-list").getAttribute("aria-busy"), "false");
+});
+
+test("failed strategy pages retain loaded evidence but retry only on another user action", async (context) => {
+  const first = fixture();
+  first.strategies = { items: [strategyFixture("idea-10")], next_cursor: 10 };
+  const older = { ...fixture(), strategies: { items: [strategyFixture("idea-5")], next_cursor: null } };
+  let reads = 0;
+  const calls = [];
+  const { doc, controller } = setup(context, async (url) => {
+    calls.push(url);
+    if (!url.includes("strategy_before")) return response(structuredClone(first));
+    return ++reads === 1 ? response({ ok: false, error: "reader_busy" }, false) : response(structuredClone(older));
+  });
+  await controller.request();
+  controller.onStrategiesMore();
+  await flush();
+  assert.equal(controller.error, "reader_busy");
+  assert.equal(controller.state.strategies.length, 1);
+  assert.match(doc.getElementById("strategies-state").textContent, /Last-known strategies/);
+  await controller.request();
+  await flush();
+  assert.equal(controller.error, null);
+  assert.equal(reads, 1);
+  assert.equal(calls.length, 3);
+  controller.onStrategiesMore();
+  await flush();
+  assert.equal(reads, 2);
+  assert.equal(controller.state.strategies.length, 2);
+});
+
+test("strategy revision and campaign races refresh first pages without mixing evidence", async (context) => {
+  for (const changeScope of [false, true]) {
+    const pending = deferred();
+    const first = fixture();
+    first.strategies = { items: [strategyFixture("old-first")], next_cursor: 10 };
+    const current = structuredClone(first);
+    current.revision += 1;
+    if (changeScope) current.scope.goal_id = "new-goal";
+    current.strategies = { items: [strategyFixture("new-first")], next_cursor: 3 };
+    const mismatched = structuredClone(current);
+    mismatched.strategies = { items: [strategyFixture("stale-page")], next_cursor: null };
+    let baseReads = 0;
+    const calls = [];
+    const { doc, controller } = setup(context, async (url) => {
+      calls.push(url);
+      if (url.includes("strategy_before")) return pending.promise;
+      return response(structuredClone(baseReads++ === 0 ? first : current));
+    });
+    await controller.request();
+    controller.onStrategiesMore();
+    pending.resolve(response(mismatched));
+    for (let count = 0; count < 3; count += 1) await flush();
+    assert.deepEqual(calls, ["/api/dashboard", "/api/dashboard?strategy_before=10", "/api/dashboard"]);
+    assert.equal(controller.state.strategiesNeedRefresh, false);
+    assert.equal(controller.state.data.revision, current.revision);
+    assert.deepEqual(controller.state.strategies.map((item) => item.intent.id), ["new-first"]);
+    assert.doesNotMatch(doc.getElementById("strategies-list").textContent, /old-first|stale-page/);
+    controller.stop();
+  }
+});
+
+test("a non-advancing strategy cursor stops paging until the recorded revision changes", async (context) => {
+  let first = fixture();
+  first.strategies = { items: [strategyFixture("idea-10")], next_cursor: 10 };
+  const stuck = { ...fixture(), strategies: { items: [strategyFixture("idea-5")], next_cursor: 10 } };
+  const calls = [];
+  const { doc, controller } = setup(context, async (url) => {
+    calls.push(url);
+    return response(structuredClone(url.includes("strategy_before") ? stuck : first));
+  });
+  await controller.request();
+  controller.onStrategiesMore();
+  await flush();
+  assert.equal(controller.strategyPaginationStalled, true);
+  assert.equal(doc.getElementById("strategies-more").disabled, true);
+  assert.match(doc.getElementById("strategies-state").textContent, /cursor did not advance/);
+  controller.onStrategiesMore();
+  assert.equal(calls.length, 2);
+  first = { ...first, revision: 13 };
+  await controller.request();
+  assert.equal(controller.strategyPaginationStalled, false);
+  assert.equal(controller.state.strategies.length, 1);
+});
+
+test("stopping during strategy pagination aborts and ignores the late page", async (context) => {
+  const pending = deferred();
+  const first = fixture();
+  first.strategies = { items: [strategyFixture("idea-10")], next_cursor: 10 };
+  let signal;
+  const { controller } = setup(context, async (url, options) => {
+    if (!url.includes("strategy_before")) return response(first);
+    signal = options.signal;
+    return pending.promise;
+  });
+  await controller.request();
+  const previous = controller.state;
+  const reading = controller.request(null, 10);
+  controller.stop();
+  assert.equal(signal.aborted, true);
+  pending.resolve(response({ ...fixture(), strategies: { items: [strategyFixture("late")], next_cursor: null } }));
+  await reading;
+  assert.equal(controller.state, previous);
   assert.equal(controller.inFlight, null);
 });

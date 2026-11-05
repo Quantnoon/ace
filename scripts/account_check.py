@@ -15,10 +15,17 @@ import uuid
 
 
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "ace_state.sqlite3"
-SCHEMA_VERSION = 3
-COMMANDS = ("draft", "activate", "check", "cycle", "prepare", "resolve", "journal", "status")
+SCHEMA_VERSION = 5
+READABLE_SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
+# Advance for reader behavior changes, including fixes within the same schema.
+READER_BUILD = 1
+READ_ONLY_COMMANDS = ("status", "context")
+COMMANDS = ("draft", "activate", "session", "check", "cycle", "prepare", "resolve", "journal", *READ_ONLY_COMMANDS)
 UNRESOLVED = ("prepared", "unknown")
 DISPLAY_VERSION = 1
+CONTEXT_VERSION = 1
+CONTEXT_OPERATIONS = ("entry", "add", "breakeven", "trail", "close", "cancel")
+STRATEGY_RULES = ("expiry_rule", "breakeven_rule", "trailing_rule", "addition_rule")
 METRIC_FIELDS = (
     "budget", "target", "balance", "equity", "peak", "drawdown", "remaining_risk",
     "adjusted_stop_floor", "account_stop_floor", "policy_cashflows", "goal_cashflows",
@@ -36,6 +43,7 @@ PERIODS = {"M1": 1, "M2": 2, "M3": 3, "M4": 4, "M5": 5, "M6": 6, "M10": 10,
            "H3": 180, "H4": 240, "H6": 360, "H8": 480, "H12": 720,
            "D1": 1440, "W1": 10080, "MN1": 43200}
 MARKET_STATES = ("open", "closed", "unknown")
+SESSION_STATUSES = ("active", "stopped", "interrupted")
 
 
 class CheckError(ValueError):
@@ -370,6 +378,10 @@ def loop_health(state, now):
     state = state or {}
     observation = state.get("observation") or {}
     loop = state.get("loop") or {}
+    session = state.get("session")
+    wake = loop.get("next_wake_at")
+    if (session and session["status"] != "active") or (not session and loop.get("status") == "closed"):
+        wake = None
     source = (observation.get("as_of") if "observation" in state
               else (state.get("last_snapshot") or {}).get("as_of"))
     result = {"last_observation_at": source,
@@ -378,7 +390,7 @@ def loop_health(state, now):
               "max_observation_gap_seconds": observation.get("max_gap_seconds"),
               "max_observation_gap_at": observation.get("max_gap_at"), "execution": "unverified"}
     for field, when in (("observation_age_seconds", source),
-                        ("wake_overdue_seconds", loop.get("next_wake_at") if loop.get("status") != "closed" else None)):
+                         ("wake_overdue_seconds", wake)):
         result[field] = None
         if when is not None:
             try:
@@ -389,11 +401,29 @@ def loop_health(state, now):
     return result
 
 
+def continuation_view(state, now):
+    """Project cached task control without observing or moving a stored deadline."""
+    state = state or {}
+    session, loop = state.get("session"), state.get("loop")
+    continuing = (session["status"] == "active" if session else
+                  isinstance(loop, dict) and loop.get("status") in ("active", "closing"))
+    return {"session": copy.deepcopy(session), "loop": copy.deepcopy(loop),
+            "may_continue": continuing, "loop_health": loop_health(state, now)}
+
+
 def loop_wake(state, now):
     """Plan deadlines from verified inputs; never wait, extrapolate bars or dispatch."""
     loop = state["loop"]
     loop.update(next_cycle_at=None, next_latch_check_at=None, next_wake_at=None, wake_reason=None)
+    session = state.get("session")
+    if session and session["status"] != "active":
+        return
     if loop.get("status") == "closed":
+        if session:
+            interval = min(state["mandate"].get("latch_check_seconds") or 300, 300)
+            received = (state.get("observation") or {}).get("received_at")
+            due = stamp(received, "observation_received_at") + timedelta(seconds=interval) if received else now
+            loop.update(next_wake_at=utc(due), wake_reason="monitor")
         return
     if loop.get("status") == "closing":
         loop.update(next_wake_at=utc(now), wake_reason="closure")
@@ -430,7 +460,10 @@ def loop_wake(state, now):
 
 
 def sync_loop(state, result, detail, now):
-    """Converge lifecycle after financial/intent work, without creating a session."""
+    """Converge lifecycle after financial/intent work, without creating a loop."""
+    session = state.get("session")
+    if session:
+        result.update(session=copy.deepcopy(session), may_continue=session["status"] == "active")
     loop = state.get("loop")
     if not isinstance(loop, dict):
         return
@@ -447,13 +480,16 @@ def sync_loop(state, result, detail, now):
         detail["previous_loop_lifecycle"] = previous
     if fresh or loop.get("status") == "closing":
         loop_wake(state, now)
-    result.update(loop=copy.deepcopy(loop), may_continue=not result.get("closure_verified", False),
+    result.update(loop=copy.deepcopy(loop),
+                  may_continue=session["status"] == "active" if session else not result.get("closure_verified", False),
                   loop_health=loop_health(state, now))
     detail["loop"] = copy.deepcopy(loop)
 
 
 def loop_cycle(state, request, now, result):
     """Count unique account observations independently of confirmed candle advances."""
+    if state.get("session") and state["session"]["status"] != "active":
+        raise CheckError("session_not_active")
     timeframe = state["mandate"].get("entry_timeframe", "M15")
     loop = state.get("loop")
     if not isinstance(loop, dict):
@@ -594,6 +630,9 @@ def action(value, state, metrics, errors):
     result["parameters"] = tool_parameters(value["parameters"])
     if value.get("policy_id") != state["policy"]["id"] or value.get("goal_id") != state["goal"]["id"]:
         raise CheckError("action_mandate_mismatch")
+    if (state.get("session") and state["session"]["status"] != "active"
+            and (result["kind"] == "entry" or value.get("reason") == "management")):
+        raise CheckError("session_not_active")
     if result["kind"] == "entry":
         if state["loss_latched_at"] or state["target_latched_at"] or errors or metrics is None:
             raise CheckError("entry_blocked")
@@ -638,6 +677,27 @@ def action(value, state, metrics, errors):
         result["risk"] = "0"
     else:
         raise CheckError("invalid_action_kind")
+    emergency = result.get("reason") in ("protection_failure", "loss", "target")
+    context = value.get("context")
+    if context is None:
+        if not emergency:
+            raise CheckError("missing_action_context")
+    else:
+        try:
+            context = action_context(context)
+            display_text(result["id"], "action_id")
+            if (result["kind"] == "entry") != (context["operation"] in ("entry", "add")):
+                raise CheckError("context_action_kind_mismatch")
+            if context["strategy"] and context["strategy"]["timeframe"] != state["mandate"].get("entry_timeframe", "M15"):
+                raise CheckError("context_timeframe_mismatch")
+            if result.get("reason") == "management" and context["origin_intent_id"] is None:
+                raise CheckError("missing_context_origin")
+            result["context"] = context
+        except CheckError as error:
+            if not emergency:
+                raise
+            # Optional explanation must not delay an otherwise valid emergency reduction.
+            result["context_warning"] = str(error)
     return result
 
 
@@ -653,6 +713,100 @@ def display_reference(value, field):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:#@-]*", value):
         raise CheckError("invalid_" + field)
     return value
+
+
+def action_context(value):
+    """Self-contained decision evidence, separate from exact broker parameters."""
+    allowed = {"version", "operation", "rationale", "source_refs", "origin_intent_id", "strategy"}
+    if not isinstance(value, dict) or set(value) - allowed or len(encode(value).encode("utf-8")) > 131072:
+        raise CheckError("invalid_action_context")
+    if type(value.get("version")) is not int or value["version"] != CONTEXT_VERSION:
+        raise CheckError("unsupported_context_version")
+    operation = value.get("operation")
+    if operation not in CONTEXT_OPERATIONS:
+        raise CheckError("invalid_context_operation")
+    refs = strings(value.get("source_refs"), "context_source_refs")
+    if len(refs) > 64:
+        raise CheckError("invalid_context_source_refs")
+    origin = value.get("origin_intent_id")
+    result = {"version": CONTEXT_VERSION, "operation": operation,
+              "rationale": display_text(value.get("rationale"), "context_rationale", 2000),
+              "source_refs": [display_reference(ref, "context_source_ref") for ref in refs],
+              "origin_intent_id": display_text(origin, "context_origin") if origin is not None else None,
+              "strategy": None}
+    if operation == "entry":
+        plan = value.get("strategy")
+        fields = {"name", "thesis", "side", "timeframe", "invalidation", *STRATEGY_RULES}
+        if origin is not None or not isinstance(plan, dict) or set(plan) != fields:
+            raise CheckError("invalid_strategy_fields")
+        strategy = {field: display_text(plan.get(field), "strategy_" + field, limit)
+                    for field, limit in (("name", 120), ("thesis", 2000), ("invalidation", 1000))}
+        if plan.get("side") not in ("buy", "sell") or not isinstance(plan.get("timeframe"), str) or plan["timeframe"] not in PERIODS:
+            raise CheckError("invalid_strategy_direction_or_timeframe")
+        strategy.update(side=plan["side"], timeframe=plan["timeframe"])
+        for field in STRATEGY_RULES:
+            strategy[field] = False if plan[field] is False else display_text(plan[field], "strategy_" + field, 1000)
+        result["strategy"] = strategy
+    elif value.get("strategy") is not None:
+        raise CheckError("strategy_only_on_original_entry")
+    elif operation in ("add", "breakeven", "trail") and origin is None:
+        raise CheckError("missing_context_origin")
+    return result
+
+
+def session_control(connection, state, request, now):
+    """Record task control, never approval, an account observation or broker execution."""
+    allowed = {"owner_id", "expected_revision", "action", "evidence_ref", "reason"}
+    if set(request) - allowed:
+        raise CheckError("invalid_session_fields")
+    action = request.get("action")
+    if action not in ("start", "resume", "stop", "interrupt"):
+        raise CheckError("invalid_session_action")
+    evidence = display_reference(request.get("evidence_ref"), "session_evidence_ref")
+    reason = display_text(request.get("reason"), "session_reason", 500)
+    previous = copy.deepcopy(state.get("session"))
+    session = copy.deepcopy(previous)
+    if action == "start":
+        if previous and previous["status"] != "stopped":
+            raise CheckError("session_already_started")
+        session = {"id": "session-" + str(uuid.uuid4()), "started_at": utc(now), "request_ref": evidence}
+    elif action == "resume":
+        if not previous or previous["status"] != "interrupted":
+            raise CheckError("session_not_interrupted")
+    elif action == "interrupt":
+        if not previous or previous["status"] != "active":
+            raise CheckError("session_not_active")
+    elif session is None:
+        # A user stop must also fence routine actions on an older, session-less mandate.
+        session = {"id": "session-" + str(uuid.uuid4()), "started_at": None, "request_ref": None}
+    repeated_stop = action == "stop" and previous and previous["status"] == "stopped" and evidence == previous["evidence_ref"]
+    if not repeated_stop:
+        replay_error = "new_session_request_required" if action == "start" else "new_session_evidence_required"
+        if previous and evidence in (previous.get("request_ref"), previous["evidence_ref"]):
+            raise CheckError(replay_error)
+        for row in connection.execute("SELECT detail FROM events WHERE command='session'"):
+            archived = decode(row[0])
+            if not isinstance(archived, dict):
+                raise CheckError("invalid_session_history")
+            control = archived.get("session")
+            if not isinstance(control, dict):
+                raise CheckError("invalid_session_history")
+            if (evidence in (control.get("request_ref"), control.get("evidence_ref"))
+                    or archived.get("session_action") == "stop" and archived.get("authority_ref") == evidence):
+                raise CheckError(replay_error)
+    session.update(status="stopped" if action == "stop" else "interrupted" if action == "interrupt" else "active",
+                   updated_at=utc(now), evidence_ref=evidence, reason=reason)
+    state["session"] = session
+    loop = state.get("loop")
+    if isinstance(loop, dict):
+        loop.update(next_cycle_at=None, next_latch_check_at=None, next_wake_at=None, wake_reason=None)
+        if session["status"] == "active":
+            loop.update(next_wake_at=utc(now), wake_reason="session_check")
+    result = {"ok": True, "decision": "session_saved", "may_dispatch": False,
+              "may_continue": session["status"] == "active", "session": copy.deepcopy(session),
+              "loop": copy.deepcopy(loop), "loop_health": loop_health(state, now)}
+    return result, {"session": copy.deepcopy(session), "session_action": action,
+                    "authority_ref": state["approval_ref"], "previous_session": previous}
 
 
 def journal_entry(request, state, now):
@@ -767,7 +921,7 @@ def display_event(state, result, detail, now):
 
 def load_state(connection):
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if version not in (1, 2, SCHEMA_VERSION):
+    if version not in READABLE_SCHEMA_VERSIONS:
         raise CheckError("unsupported_schema")
     row = connection.execute("SELECT revision, payload FROM state WHERE id = 1").fetchone()
     if row is None:
@@ -781,6 +935,20 @@ def load_state(connection):
     if not isinstance(state, dict) or account(state.get("account")) != state["account"]:
         raise CheckError("invalid_account_state")
     text(state.get("owner_id"), "owner_id")
+    session = state.get("session")
+    if session is not None:
+        if not isinstance(session, dict) or session.get("status") not in SESSION_STATUSES:
+            raise CheckError("invalid_session_state")
+        for field in ("id", "evidence_ref"):
+            display_reference(session.get(field), "session_" + field)
+        display_text(session.get("reason"), "session_reason", 500)
+        stamp(session.get("updated_at"), "session_updated_at")
+        if session.get("started_at") is not None:
+            # Revisions order controls; a wall-clock rollback must not corrupt a user stop.
+            stamp(session["started_at"], "session_started_at")
+            display_reference(session.get("request_ref"), "session_request_ref")
+        elif session["status"] != "stopped" or session.get("request_ref") is not None:
+            raise CheckError("invalid_session_state")
     state.setdefault("loop", None)
     return row[0], state
 
@@ -803,6 +971,56 @@ def pending(connection):
     return connection.execute("SELECT id, payload, status, outcome FROM intents WHERE status IN ('prepared', 'unknown') ORDER BY id").fetchall()
 
 
+def context_page(connection, state, *, before=None, limit=20, origin_intent_id=None):
+    """Bounded private recovery records; callers must sanitize them for display."""
+    maximum = 9223372036854775807
+    if before is not None and (type(before) is not int or not 0 < before <= maximum):
+        raise CheckError("invalid_context_cursor")
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise CheckError("invalid_context_limit")
+    if origin_intent_id is not None:
+        display_text(origin_intent_id, "context_origin")
+    page = {"items": [], "next_cursor": None, "origin": None}
+    if not state or not state.get("policy") or not state.get("goal"):
+        return page
+    paths = ("account.login", "account.server", "account.type", "account.currency", "policy_id", "goal_id")
+    binding = tuple(state["account"][key] for key in ("login", "server", "type", "currency")) + (state["policy"]["id"], state["goal"]["id"])
+
+    def scope(column, prefix=""):
+        checks = " AND ".join("json_extract(" + column + ", '$." + prefix + path + "') = ?" for path in paths)
+        return "CASE WHEN json_valid(" + column + ") THEN " + checks + " ELSE 0 END"
+
+    def record(row):
+        return {"id": row[0], "action": decode(row[1], exact_numbers=False), "status": row[2],
+                "outcome": decode(row[3], exact_numbers=False) if row[3] else None}
+
+    roots = "CASE WHEN json_valid(payload) THEN json_extract(payload, '$.kind') = 'entry' AND json_extract(payload, '$.context.origin_intent_id') IS NULL ELSE 0 END"
+    related = "(id = ? OR CASE WHEN json_valid(payload) THEN json_extract(payload, '$.context.origin_intent_id') = ? ELSE 0 END)"
+    selected, selection = roots, ()
+    if origin_intent_id is not None:
+        row = connection.execute("SELECT id, payload, status, outcome FROM intents WHERE " + scope("payload") + " AND " + roots + " AND id = ?",
+                                 (*binding, origin_intent_id)).fetchone()
+        if row is None:
+            raise CheckError("context_origin_not_found")
+        page["origin"] = record(row)
+        selected, selection = related, (origin_intent_id, origin_intent_id)
+    rows = connection.execute("SELECT rowid, id, payload, status, outcome FROM intents WHERE " + scope("payload") + " AND " + selected + " AND rowid < ? ORDER BY rowid DESC LIMIT ?",
+                              (*binding, *selection, before if before is not None else maximum, limit + 1)).fetchall()
+    if len(rows) > limit:
+        page["next_cursor"] = rows[limit - 1][0]
+    for row in rows[:limit]:
+        intent = record(row[1:])
+        relation, refs = (related, (intent["id"], intent["id"])) if origin_intent_id is None else ("id = ?", (intent["id"],))
+        latest = connection.execute("SELECT id, payload, status, outcome FROM intents WHERE " + scope("payload") + " AND " + relation + " ORDER BY rowid DESC LIMIT 1",
+                                    (*binding, *refs)).fetchone()
+        journal = connection.execute("SELECT detail FROM events WHERE command = 'journal' AND " + scope("detail", "journal.") +
+                                     " AND CASE WHEN json_valid(detail) THEN json_extract(detail, '$.journal.intent_id') IN (SELECT id FROM intents WHERE " + scope("payload") + " AND " + relation + ") ELSE 0 END ORDER BY id DESC LIMIT 1",
+                                     (*binding, *binding, *refs)).fetchone()
+        page["items"].append({"intent": intent, "latest_action": record(latest),
+                              "latest_journal": decode(journal[0], exact_numbers=False).get("journal") if journal else None})
+    return page
+
+
 def activate(state, request, now, outstanding):
     mode = request.get("mode")
     if mode not in ("start", "resume", "reauthorize", "new_goal", "replace_policy"):
@@ -816,6 +1034,11 @@ def activate(state, request, now, outstanding):
     approved_at = stamp(request.get("approved_at"), "approved_at")
     if approved_at > now:
         raise CheckError("future_approval")
+    approval_mode = request.get("approval_mode", state.get("approval_mode", "reviewed") if mode == "resume" else "reviewed")
+    if approval_mode not in ("reviewed", "start_request"):
+        raise CheckError("invalid_approval_mode")
+    if mode == "resume" and approval_mode != state.get("approval_mode", "reviewed"):
+        raise CheckError("resume_cannot_change_approval_mode")
     if not isinstance(request.get("snapshot"), dict):
         raise CheckError("missing_snapshot")
     draft = state["draft"]
@@ -844,12 +1067,16 @@ def activate(state, request, now, outstanding):
     if mode not in ("resume", "reauthorize"):
         if not isinstance(request.get("baseline"), dict):
             raise CheckError("missing_approval_baseline")
-        if stamp(request["baseline"].get("as_of"), "baseline_as_of") > approved_at:
+        baseline_at = stamp(request["baseline"].get("as_of"), "baseline_as_of")
+        if approval_mode == "reviewed" and baseline_at > approved_at:
             raise CheckError("baseline_not_in_approval")
+        if approval_mode == "start_request" and baseline_at < approved_at:
+            raise CheckError("baseline_predates_start_request")
         if replacement:
             state["last_snapshot"] = None
             state["history_anchor"] = request["baseline"].get("as_of")
-        baseline = snapshot(request["baseline"], state, approved_at, approved_baseline=True)
+        baseline_time = now if approval_mode == "start_request" else approved_at
+        baseline = snapshot(request["baseline"], state, baseline_time, approved_baseline=approval_mode == "reviewed")
         if money(baseline["equity"], "equity") <= 0:
             raise CheckError("nonpositive_baseline")
         total = sum((money(f["amount"], "cashflow") for f in baseline["cashflows"]), Decimal(0))
@@ -858,19 +1085,19 @@ def activate(state, request, now, outstanding):
                 raise CheckError("new_policy_requires_new_cashflow_boundary")
             state["policy"] = {"id": str(uuid.uuid4()), "budget": format(budget, "f"),
                                "started_at": baseline["as_of"], "start_equity": baseline["equity"],
-                               "cashflow_anchor": format(total, "f"), "approval_ref": approval_ref,
-                               "approved_at": request["approved_at"]}
+                                "cashflow_anchor": format(total, "f"), "approval_ref": approval_ref,
+                                "approved_at": request["approved_at"], "approval_mode": approval_mode}
             state["peak"] = baseline["equity"]
             state["loss_latched_at"] = None
             state["history_start_cursor"] = baseline["history_cursor"]
         else:
-            observe(state, baseline, approved_at, approved_baseline=True)
+            observe(state, baseline, baseline_time, approved_baseline=True)
             if state["loss_latched_at"]:
                 raise CheckError("loss_requires_replacement_policy")
         state["goal"] = {"id": str(uuid.uuid4()), "target": format(target, "f"),
                          "started_at": baseline["as_of"], "start_equity": baseline["equity"],
-                         "cashflow_anchor": format(total, "f"), "approval_ref": approval_ref,
-                         "approved_at": request["approved_at"]}
+                          "cashflow_anchor": format(total, "f"), "approval_ref": approval_ref,
+                          "approved_at": request["approved_at"], "approval_mode": approval_mode}
         state["target_latched_at"] = None
         state["target_trigger_gain"] = None
         state["last_snapshot"] = baseline
@@ -885,6 +1112,7 @@ def activate(state, request, now, outstanding):
                 raise CheckError("settle_existing_costs_before_replacement")
     state["approval_ref"] = approval_ref
     state["approved_at"] = request["approved_at"]
+    state["approval_mode"] = approval_mode
     state["owner_id"] = request["owner_id"]
     loop = state.get("loop")
     if mode in ("start", "new_goal", "replace_policy"):
@@ -928,16 +1156,32 @@ def transact(connection, command, request, now):
     revision, state = load_state(connection)
     if command == "status":
         return {"ok": True, "decision": "cached" if state else "unconfigured",
-                 "may_dispatch": False, "revision": revision, "state": state,
-                 "loop_health": loop_health(state, now),
-                "outstanding_intents": [{"id": row[0], "action": decode(row[1], exact_numbers=False),
-                                         "status": row[2], "outcome": decode(row[3], exact_numbers=False) if row[3] else None}
-                                        for row in pending(connection)]}
+                  "may_dispatch": False, "revision": revision, "state": state,
+                  **continuation_view(state, now),
+                 "outstanding_intents": [{"id": row[0], "action": decode(row[1], exact_numbers=False),
+                                          "status": row[2], "outcome": decode(row[3], exact_numbers=False) if row[3] else None}
+                                         for row in pending(connection)]}
+    if command == "context":
+        if set(request) - {"before", "limit", "origin_intent_id"}:
+            raise CheckError("invalid_context_request_fields")
+        return {"ok": True, "decision": "cached" if state else "unconfigured", "may_dispatch": False,
+                "revision": revision, "account": state["account"] if state else None,
+                "policy_id": state["policy"]["id"] if state and state.get("policy") else None,
+                "goal_id": state["goal"]["id"] if state and state.get("goal") else None,
+                "context": context_page(connection, state, **request), **continuation_view(state, now)}
     if type(request.get("expected_revision")) is not int or request["expected_revision"] != revision:
         raise CheckError("revision_mismatch")
     owner = text(request.get("owner_id"), "owner_id")
     if state and owner != state["owner_id"] and command != "activate":
         raise CheckError("owner_mismatch")
+    if command == "session":
+        if not state or not state.get("policy") or not state.get("goal"):
+            raise CheckError("setup_incomplete")
+        result, detail = session_control(connection, state, request, now)
+        detail["display"] = display_event(state, result, detail, now)
+        save_state(connection, revision + 1, state, command, detail, now)
+        result.update(revision=revision + 1, policy_id=state["policy"]["id"], goal_id=state["goal"]["id"])
+        return result
     if command == "journal":
         if not state or not state.get("policy") or not state.get("goal"):
             raise CheckError("setup_incomplete")
@@ -950,7 +1194,7 @@ def transact(connection, command, request, now):
         state["last_journal"] = entry
         save_state(connection, revision + 1, state, command, {"journal": entry}, now)
         return {"ok": True, "decision": "journal_saved", "may_dispatch": False, "revision": revision + 1,
-                "policy_id": entry["policy_id"], "goal_id": entry["goal_id"]}
+                "policy_id": entry["policy_id"], "goal_id": entry["goal_id"], **continuation_view(state, now)}
     if command == "draft":
         identity = account(request.get("account"))
         source_ref = text(request.get("source_ref"), "source_ref")
@@ -983,8 +1227,9 @@ def transact(connection, command, request, now):
                 metrics, errors = None, [str(error)]
                 if isinstance(request.get("baseline"), dict):
                     try:
-                        observe(state, request["baseline"], min(stamp(request.get("approved_at"), "approved_at"), now),
-                                approved_baseline=True)
+                        baseline_time = now if request.get("approval_mode") == "start_request" else min(stamp(request.get("approved_at"), "approved_at"), now)
+                        observe(state, request["baseline"], baseline_time,
+                                approved_baseline=request.get("approval_mode", "reviewed") == "reviewed")
                     except CheckError:
                         pass
                 try:
@@ -1012,6 +1257,25 @@ def transact(connection, command, request, now):
                     proposed = action(request.get("action"), state, metrics, errors)
                     if proposed["kind"] == "entry" and outstanding:
                         raise CheckError("unresolved_intents")
+                    origin_id = (proposed.get("context") or {}).get("origin_intent_id")
+                    if origin_id is not None:
+                        try:
+                            row = connection.execute("SELECT status, payload FROM intents WHERE id = ?", (origin_id,)).fetchone()
+                            origin = decode(row[1], exact_numbers=False) if row else {}
+                            if (not isinstance(origin, dict) or origin.get("kind") != "entry" or origin.get("id") != origin_id
+                                    or origin.get("account") != state["account"]
+                                    or any(origin.get(key + "_id") != state[key]["id"] for key in ("policy", "goal"))):
+                                raise CheckError("context_origin_mismatch")
+                            original_context = action_context(origin.get("context"))
+                            if original_context["operation"] != "entry" or row[0] != "completed":
+                                raise CheckError("context_origin_not_settled_entry")
+                            if proposed["kind"] == "entry" and proposed["symbol"] != origin.get("symbol"):
+                                raise CheckError("context_origin_symbol_mismatch")
+                        except CheckError as error:
+                            if proposed.get("reason") not in ("protection_failure", "loss", "target"):
+                                raise
+                            proposed.pop("context", None)
+                            proposed["context_warning"] = str(error)
                     if proposed["kind"] == "reduce":
                         for _intent_id, raw, _status, _outcome in outstanding:
                             other = decode(raw, exact_numbers=False)
@@ -1026,6 +1290,8 @@ def transact(connection, command, request, now):
                     connection.execute("INSERT INTO intents(id, signal_key, status, payload) VALUES (?, ?, 'prepared', ?)",
                                        (proposed["id"], signal_key, encode(proposed)))
                     result.update(decision="prepared", may_dispatch=True, intent=proposed)
+                    if proposed.get("context_warning"):
+                        result["reason_codes"] = sorted(set(result["reason_codes"] + ["action_context_unavailable"]))
                     detail["intent_id"] = proposed["id"]
                 elif command == "resolve":
                     intent_id = text(request.get("intent_id"), "intent_id")
@@ -1087,9 +1353,14 @@ def run(command, request=None, db_path=DEFAULT_DB, now=None):
     now = now or datetime.now(timezone.utc)
     path = Path(db_path).resolve()
     existed = path.exists()
-    if not existed and command == "status":
-        return {"ok": True, "decision": "unconfigured", "may_dispatch": False,
-                "revision": 0, "state": None, "outstanding_intents": []}
+    if not existed and command in READ_ONLY_COMMANDS:
+        result = {"ok": True, "decision": "unconfigured", "may_dispatch": False,
+                  "revision": 0, **continuation_view(None, now)}
+        if command == "status":
+            return dict(result, state=None, outstanding_intents=[])
+        if set(request) - {"before", "limit", "origin_intent_id"}:
+            raise CheckError("invalid_context_request_fields")
+        return dict(result, account=None, policy_id=None, goal_id=None, context=context_page(None, None, **request))
     create = command == "draft"
     if not existed and not create:
         raise CheckError("setup_incomplete")
@@ -1105,11 +1376,11 @@ def run(command, request=None, db_path=DEFAULT_DB, now=None):
                 money(request[field], field, positive=True)
         if "mandate" in request:
             mandate(request["mandate"])
-    mode = "ro" if command == "status" else "rwc" if create else "rw"
+    mode = "ro" if command in READ_ONLY_COMMANDS else "rwc" if create else "rw"
     connection = None
     try:
         connection = sqlite3.connect(path.as_uri() + "?mode=" + mode, uri=True, timeout=1)
-        connection.execute("BEGIN" if command == "status" else "BEGIN IMMEDIATE")
+        connection.execute("BEGIN" if command in READ_ONLY_COMMANDS else "BEGIN IMMEDIATE")
         if not existed and create:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -1134,10 +1405,17 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=COMMANDS)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="SQLite path; default is repository-root ace_state.sqlite3")
-    parser.add_argument("--input", type=Path, help="Private JSON request file; otherwise read stdin (not needed for status)")
+    parser.add_argument("--input", type=Path, help="Private JSON mutation request; status/context do not read stdin")
+    parser.add_argument("--before", type=int, help="context only: earlier intent-row cursor")
+    parser.add_argument("--limit", type=int, help="context only: page size from 1 to 100 (default 20)")
+    parser.add_argument("--origin-intent-id", help="context only: original entry whose actions should be read")
     args = parser.parse_args(argv)
+    options = {key: value for key, value in {"before": args.before, "limit": args.limit,
+                                            "origin_intent_id": args.origin_intent_id}.items() if value is not None}
+    if (options and args.command != "context") or (args.command == "context" and args.input is not None):
+        parser.error("context uses --before, --limit and --origin-intent-id, not --input")
     try:
-        request = {} if args.command == "status" else decode(args.input.read_text(encoding="utf-8-sig") if args.input else sys.stdin.read())
+        request = options if args.command in READ_ONLY_COMMANDS else decode(args.input.read_text(encoding="utf-8-sig") if args.input else sys.stdin.read())
         result = run(args.command, request, args.db)
         print(encode(result))
         return 0
