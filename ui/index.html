@@ -30,7 +30,7 @@
   <main id="ace-dashboard" class="desk" aria-busy="true" tabindex="-1">
     <div class="page-heading">
       <div><p class="eyebrow">ONE ACCOUNT / ONE SHARED TARGET</p><h1>Target, in view.</h1></div>
-      <nav aria-label="Dashboard sections"><a href="#target">Target</a><a href="#activity">Activity</a><a href="#orders">Orders</a></nav>
+      <nav aria-label="Dashboard sections"><a href="#target">Target</a><a href="#activity">Activity</a></nav>
     </div>
 
     <section class="source-strip" aria-label="Observation and interface freshness">
@@ -65,46 +65,38 @@
       <div class="overview-grid">
         <section id="target" class="target-section" aria-labelledby="target-heading">
           <div class="section-heading"><h2 id="target-heading"><span class="section-index">01</span> Approved account target</h2><span class="tag">ACCOUNT-WIDE</span></div>
-          <p id="approved-target" class="target-amount numeric">Unavailable</p>
-          <p class="target-description">Additional net equity gain from the approved goal baseline, adjusted for external cash flows and estimated incremental closing costs.</p>
-          <dl class="target-metrics">
-            <div><dt>Estimated net gain</dt><dd id="net-gain" class="numeric">Unavailable</dd><span class="metric-note">Toward this target</span></div>
-            <div><dt>Target progress</dt><dd id="progress-pct" class="numeric">Unavailable</dd><span class="metric-note">~ is truncated; exact value on hover</span></div>
-            <div><dt>Remaining target</dt><dd id="remaining-target" class="numeric">Unavailable</dd><span class="metric-note">Not a promised return</span></div>
-          </dl>
-          <dl class="baseline-metrics">
-            <div><dt>Goal baseline equity</dt><dd id="baseline-equity" class="numeric">Unavailable</dd></div>
-            <div><dt>Incremental close costs</dt><dd id="close-costs" class="numeric">Unavailable</dd></div>
-            <div><dt>Baseline source time</dt><dd><time id="goal-start">Unavailable</time></dd></div>
-            <div><dt>Goal approved at</dt><dd><time id="goal-approved">Unavailable</time></dd></div>
-          </dl>
-          <p id="active-draft-note" class="section-note" hidden>A separate, unapproved draft is recorded. It does not replace this approved goal.</p>
-
-          <section class="progress-section" aria-labelledby="chart-heading">
-            <div class="section-heading"><h3 id="chart-heading">Observed progress</h3><span class="eyebrow">SAMPLED / NOT CONTINUOUS</span></div>
-            <div class="chart-legend"><span><i class="legend-line" aria-hidden="true"></i>Net gain</span><span><i class="legend-line legend-line--target" aria-hidden="true"></i>Approved target</span><span id="chart-scale" class="muted"></span></div>
-            <figure class="progress-figure">
-              <svg id="progress-chart" class="progress-chart" viewBox="0 0 800 240" role="group" aria-labelledby="progress-chart-title progress-chart-description" hidden>
-                <title id="progress-chart-title">Estimated net gain toward the current goal</title>
-                <desc id="progress-chart-description">Recorded observations only. Focus a point for its exact value, or open the exact observations table below. Lines do not represent continuous monitoring.</desc>
-                <g id="chart-drawing"></g>
+          <div class="target-overview">
+            <div id="target-progress" class="target-progress" role="progressbar" aria-label="Approved target progress" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Unavailable">
+              <svg viewBox="0 0 240 240" aria-hidden="true" focusable="false">
+                <circle class="target-progress-track" cx="120" cy="120" r="94" pathLength="100"></circle>
+                <circle id="target-progress-ring" class="target-progress-ring" cx="120" cy="120" r="94" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100" transform="rotate(-90 120 120)"></circle>
               </svg>
-              <p id="chart-empty" class="chart-empty">Progress history unavailable.</p>
-              <div class="chart-range"><time id="chart-from">Unavailable</time><time id="chart-to">Unavailable</time></div>
-              <figcaption id="chart-coverage" class="section-note">No observations are inferred between recorded samples.</figcaption>
-            </figure>
-            <output id="chart-readout" class="chart-readout" aria-live="polite">Focus or point to a sample for exact values.</output>
-            <details id="chart-table-details" class="disclosure">
-              <summary id="chart-table-summary">View exact observations</summary>
-              <div class="table-scroll" tabindex="0" role="region" aria-label="Exact progress observations, horizontally scrollable">
-                <table class="observation-table">
-                  <caption>Exact source values for the displayed current-goal window. Missing values are not zero.</caption>
-                  <thead><tr><th scope="col">Source time (UTC)</th><th scope="col">Net gain</th><th scope="col">Progress</th><th scope="col">Target</th><th scope="col">Observation / notes</th></tr></thead>
-                  <tbody id="chart-table-body"></tbody>
-                </table>
+              <div class="target-progress-copy">
+                <span class="eyebrow">SAVED PROGRESS</span>
+                <strong id="progress-pct" class="numeric">Unavailable</strong>
               </div>
-            </details>
-          </section>
+            </div>
+            <div class="target-summary">
+              <div class="target-primary"><span class="eyebrow">APPROVED TARGET</span><p id="approved-target" class="target-amount numeric">Unavailable</p></div>
+              <dl class="target-metrics">
+                <div><dt>Estimated net gain</dt><dd id="net-gain" class="numeric">Unavailable</dd></div>
+                <div><dt>Remaining target</dt><dd id="remaining-target" class="numeric">Unavailable</dd></div>
+              </dl>
+              <p class="section-note">Latest saved account observation. A full arc is not by itself a verified target latch, closure, or promised return.</p>
+            </div>
+          </div>
+          <details class="disclosure target-details">
+            <summary>Target accounting details</summary>
+            <p class="target-definition">Additional net equity gain from the approved goal baseline, adjusted for external cash flows and estimated incremental closing costs.</p>
+            <dl class="baseline-metrics">
+              <div><dt>Exact target progress</dt><dd id="progress-exact" class="numeric">Unavailable</dd></div>
+              <div><dt>Goal baseline equity</dt><dd id="baseline-equity" class="numeric">Unavailable</dd></div>
+              <div><dt>Incremental close costs</dt><dd id="close-costs" class="numeric">Unavailable</dd></div>
+              <div><dt>Baseline source time</dt><dd><time id="goal-start">Unavailable</time></dd></div>
+              <div><dt>Goal approved at</dt><dd><time id="goal-approved">Unavailable</time></dd></div>
+            </dl>
+          </details>
+          <p id="active-draft-note" class="section-note" hidden>A separate, unapproved draft is recorded. It does not replace this approved goal.</p>
         </section>
 
         <aside class="risk-section" aria-labelledby="risk-heading">
@@ -194,25 +186,15 @@
             <p id="activity-note" class="section-note">A bounded window of recorded events, not a continuous execution log.</p>
             <p id="activity-empty" class="inline-empty">Activity unavailable.</p>
             <ol id="activity-list" class="timeline-list"></ol>
-            <div class="load-older"><button id="older-button" class="button" type="button" disabled>Load older activity</button><span id="older-state" class="muted" role="status"></span></div>
+            <div class="activity-controls"><button id="activity-toggle" class="button" type="button" aria-controls="activity-list" aria-expanded="false" disabled hidden>View all activity</button><span id="activity-state" class="muted" role="status"></span></div>
           </section>
-        </div>
-
-        <section id="orders" class="orders-section" aria-labelledby="orders-heading">
-          <div class="section-heading"><h2 id="orders-heading"><span class="section-index">04</span> Broker pending orders</h2><span id="orders-total" class="tag">Unavailable</span></div>
-          <div class="orders-toolbar"><p class="section-note">All account orders, including manual orders.</p><label for="order-filter" class="sr-only">Filter broker pending orders</label><select id="order-filter"><option value="all">All account orders</option><option value="entry">Entry orders</option><option value="protective">Protective orders</option></select></div>
-          <div class="order-columns" aria-hidden="true"><span>INSTRUMENT / TICKET</span><span>TYPE / OWNERSHIP</span><span>LOTS LEFT</span><span>STRESSED RISK</span><span></span></div>
-          <p id="orders-empty" class="inline-empty">Pending order list unavailable.</p>
-          <ul id="orders-list" class="order-list"></ul>
-          <p class="section-note order-footnote">Expand an order for entry, stop-limit, SL/TP, timing and protection. Unknown details are unavailable; explicitly unset values say "Not set". Attached SL/TP are not invented as pending rows.</p>
-
           <section class="intents-section" aria-labelledby="intents-heading">
-            <div class="section-heading"><h3 id="intents-heading">Unresolved requests</h3><span id="intents-count" class="tag">Unavailable</span></div>
+            <div class="section-heading"><h2 id="intents-heading">Unresolved requests</h2><span id="intents-count" class="tag">Unavailable</span></div>
             <p class="section-note">Local action intents, separate from broker pending orders. A settled request does not by itself mean filled or flat.</p>
             <p id="intents-empty" class="inline-empty">Request list unavailable.</p>
             <ul id="intents-list" class="intent-list"></ul>
           </section>
-        </section>
+        </div>
       </div>
     </div>
 

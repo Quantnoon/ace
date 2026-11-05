@@ -1,7 +1,8 @@
 const UNAVAILABLE = "Unavailable";
 const DECIMAL = /^[+-]?\d+(?:\.\d+)?$/;
 const UTC_STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$/;
-const SVG_NS = "http://www.w3.org/2000/svg";
+export const ACTIVITY_PREVIEW_SIZE = 5;
+const ACTIVITY_PAGE_RETRIES = 3;
 const ACTIVITIES = new Set(["analysis", "wait", "entry", "management", "exit", "blocked"]);
 const OUTCOMES = {
   within_budget: ["Within budget at last check", "neutral", "The recorded check was within the monetary budget. It is not a current permission to trade."],
@@ -69,6 +70,17 @@ export function formatPercent(value, { compact = false } = {}) {
   }
   const amount = formatDecimal(value, { signed: true });
   return amount === UNAVAILABLE ? amount : `${amount}%`;
+}
+
+export function progressFill(value) {
+  if (!isDecimal(value)) return null;
+  if (decimalSign(value) !== 1) return 0;
+  const unsigned = value[0] === "+" ? value.slice(1) : value;
+  const integer = unsigned.split(".")[0].replace(/^0+(?=\d)/, "");
+  if (integer.length > 3 || integer.length === 3 && integer >= "100") return 100;
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return 100;
+  return amount >= 100 ? 100 - Number.EPSILON * 100 : amount;
 }
 
 export function formatCount(value) {
@@ -162,28 +174,6 @@ export function journalForScope(data, journal = data?.latest_journal) {
   return journal;
 }
 
-export function orderDetail(order, field, currency) {
-  const details = order?.details;
-  if (!record(details)) return UNAVAILABLE;
-  if (Array.isArray(details.unset_fields) && details.unset_fields.includes(field)) {
-    return details[field] == null ? "Not set" : UNAVAILABLE;
-  }
-  if (field === "placed_at" || field === "expires_at") return formatTimestamp(details[field]);
-  if (field === "volume_initial" || field === "volume_remaining") {
-    return details.volume_unit === "lots" && isDecimal(details[field]) ? `${formatDecimal(details[field])} lots` : UNAVAILABLE;
-  }
-  if (["entry_price", "stop_limit_price", "stop_loss", "take_profit"].includes(field)) return formatDecimal(details[field]);
-  if (field === "risk") return formatMoney(order.risk, currency);
-  if (field === "side") return ["buy", "sell"].includes(details.side) ? codeLabel(details.side) : UNAVAILABLE;
-  if (field === "ownership") return ["ace", "manual", "mixed", "unknown"].includes(details.ownership) ? details.ownership === "ace" ? "Ace" : codeLabel(details.ownership) : UNAVAILABLE;
-  return text(details[field]);
-}
-
-export function ordersForFilter(orders, filter = "all") {
-  if (!Array.isArray(orders)) return null;
-  return orders.filter((order) => record(order) && (filter === "all" || order.kind === filter));
-}
-
 export function mergeActivity(current, incoming) {
   if (!Array.isArray(incoming)) return null;
   const rows = new Map();
@@ -203,8 +193,8 @@ function cursor(value) {
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-// An older page carries a current summary, but its chart and events cannot be
-// attached to a different account/policy/goal while a request is in flight.
+// An older page carries a current summary, but its events cannot be attached
+// to a different account/policy/goal while a request is in flight.
 export function mergeDashboardPage(previous, data, {
   before = null, requestScope = scopeKey(previous?.data), requestId = 0, latestRequestId = requestId,
 } = {}) {
@@ -215,7 +205,7 @@ export function mergeDashboardPage(previous, data, {
   if (!changed && data.revision < previous.data.revision) return previous;
   const hadConfigured = previous?.hadConfigured === true || data.status === "configured";
   if (data.status !== "configured") {
-    return { data, scope, activity: null, progress: null, cursor: null, needsRefresh: false,
+    return { data, scope, activity: null, cursor: null, needsRefresh: false,
       historyGap: false, hadConfigured, unconfiguredAfterLoad: data.status === "unconfigured" && hadConfigured };
   }
   const mismatchedPage = before !== null && requestScope !== scope;
@@ -228,41 +218,10 @@ export function mergeDashboardPage(previous, data, {
   if (!changed && before === null && oldRows?.length && !disjoint) nextCursor = previous.cursor;
   return {
     data, scope, activity,
-    progress: mismatchedPage ? null : before === null ? data.progress ?? null : changed ? null : previous.progress,
     cursor: mismatchedPage ? null : nextCursor,
     needsRefresh: mismatchedPage,
     historyGap: !changed && (previous.historyGap || disjoint),
     hadConfigured, unconfiguredAfterLoad: false,
-  };
-}
-
-function coordinate(value) {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
-}
-
-export function chartGeometry(progress) {
-  const points = Array.isArray(progress?.points) ? progress.points.filter(record) : null;
-  const samples = [];
-  const segments = [];
-  const gaps = [];
-  let segment = [];
-  for (const [index, point] of (points ?? []).entries()) {
-    const plottable = coordinate(point.x) && coordinate(point.y) && isDecimal(point.gain) && isDecimal(point.pct);
-    if (point.gap_before || !plottable) {
-      if (segment.length) segments.push(segment);
-      segment = [];
-    }
-    if (point.gap_before && coordinate(point.x)) gaps.push(50 + point.x * 720);
-    if (!plottable) continue;
-    const sample = { point, key: JSON.stringify([point.event_id, point.snapshot_id, point.as_of, index]), x: 50 + point.x * 720, y: 20 + point.y * 180 };
-    samples.push(sample);
-    segment.push(sample);
-  }
-  if (segment.length) segments.push(segment);
-  return {
-    points, samples, segments, gaps,
-    targetY: coordinate(progress?.target_y) ? 20 + progress.target_y * 180 : null,
-    zeroY: coordinate(progress?.zero_y) ? 20 + progress.zero_y * 180 : null,
   };
 }
 
@@ -280,13 +239,6 @@ function setText(node, value) {
 function element(doc, tag, content, className) {
   const node = doc.createElement(tag);
   if (className) node.className = className;
-  if (content !== undefined) setText(node, content);
-  return node;
-}
-
-function svgElement(doc, tag, attributes = {}, content) {
-  const node = doc.createElementNS(SVG_NS, tag);
-  for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
   if (content !== undefined) setText(node, content);
   return node;
 }
@@ -330,13 +282,13 @@ class DashboardView {
   constructor(doc) {
     this.doc = doc;
     this.rowCaches = new Map();
-    this.chartSignature = null;
+    this.progressSignature = null;
     this.journalSignature = null;
     this.warningSignature = null;
     this.scope = null;
     this.currency = null;
     this.lastAnnouncement = "";
-    this.filter = "all";
+    this.activityExpanded = false;
   }
 
   node(id) { return this.doc.getElementById(id); }
@@ -366,9 +318,9 @@ class DashboardView {
     this.scope = scope;
     for (const id of this.rowCaches.keys()) this.node(id).replaceChildren();
     this.rowCaches.clear();
-    this.chartSignature = null;
+    this.progressSignature = null;
     this.journalSignature = null;
-    this.text("chart-readout", "Focus or point to a sample for exact values.");
+    this.activityExpanded = false;
   }
 
   // Preserve the native details/summary nodes, focus, and expanded state.
@@ -492,9 +444,7 @@ class DashboardView {
     const approved = approvedAmounts(data);
     this.money("approved-target", approved.target);
     this.money("net-gain", metrics.estimated_goal_gain, { signed: true, tonal: true });
-    this.text("progress-pct", formatPercent(metrics.progress_pct, { compact: true }));
-    this.node("progress-pct").title = isDecimal(metrics.progress_pct) ? `${metrics.progress_pct}% (exact)` : UNAVAILABLE;
-    this.node("progress-pct").dataset.tone = decimalSign(metrics.progress_pct) === -1 ? "danger" : decimalSign(metrics.progress_pct) === 1 ? "positive" : "neutral";
+    this.renderTargetProgress(metrics.progress_pct);
     this.money("remaining-target", metrics.remaining_target);
     this.money("baseline-equity", data.goal?.start_equity);
     this.money("close-costs", metrics.remaining_close_costs);
@@ -553,10 +503,30 @@ class DashboardView {
     this.time("loop-max-observation-gap-at", data.loop?.max_observation_gap_at);
     this.text("loop-end", codeLabel(data.loop?.end_reason));
     this.renderJournal(data);
-    this.renderChart(state.progress);
     this.renderActivity(state);
-    this.renderOrders(data.pending_orders);
     this.renderIntents(data.unresolved_intents);
+  }
+
+  renderTargetProgress(value) {
+    const fill = progressFill(value);
+    const compact = formatPercent(value, { compact: true });
+    const exact = formatPercent(value);
+    const tone = decimalSign(value) === -1 ? "danger" : decimalSign(value) === 1 ? "positive" : "neutral";
+    this.text("progress-pct", compact);
+    this.text("progress-exact", exact);
+    this.node("progress-pct").title = isDecimal(value) ? `${value}% (exact)` : UNAVAILABLE;
+    this.node("progress-pct").dataset.tone = tone;
+    this.node("progress-exact").dataset.tone = tone;
+    const progress = this.node("target-progress");
+    progress.dataset.tone = fill === null ? "muted" : tone;
+    progress.setAttribute("aria-valuetext", fill === null ? "Target progress unavailable" : `${exact} toward the approved target`);
+    if (fill === null) progress.removeAttribute("aria-valuenow");
+    else progress.setAttribute("aria-valuenow", String(fill));
+    const signature = JSON.stringify([value, fill]);
+    if (signature !== this.progressSignature) {
+      this.node("target-progress-ring").setAttribute("stroke-dashoffset", String(100 - (fill ?? 0)));
+      this.progressSignature = signature;
+    }
   }
 
   renderJournal(data) {
@@ -577,90 +547,19 @@ class DashboardView {
     journalFields(this.doc, list, journal);
   }
 
-  renderChart(progress) {
-    const signature = JSON.stringify([progress, this.currency]);
-    if (signature === this.chartSignature) return;
-    this.chartSignature = signature;
-    const geometry = chartGeometry(progress);
-    const { points, samples, segments, gaps, targetY, zeroY } = geometry;
-    const drawing = this.node("chart-drawing");
-    const focusedKey = this.doc.activeElement?.getAttribute("data-point-key");
-    drawing.replaceChildren();
-    const shape = (tag, attributes, content) => {
-      const node = svgElement(this.doc, tag, attributes, content);
-      drawing.append(node);
-      return node;
-    };
-    for (const y of [20, 65, 110, 155, 200]) shape("line", { x1: 50, x2: 770, y1: y, y2: y, class: "chart-grid", "aria-hidden": "true" });
-    if (zeroY !== null) shape("line", { x1: 50, x2: 770, y1: zeroY, y2: zeroY, class: "chart-zero", "aria-hidden": "true" });
-    if (targetY !== null) {
-      shape("line", { x1: 50, x2: 770, y1: targetY, y2: targetY, class: "chart-target", "aria-hidden": "true" });
-      shape("text", { x: 770, y: Math.max(12, targetY - 7), "text-anchor": "end", class: "chart-target-label", "aria-hidden": "true" }, "TARGET");
-    }
-    for (const x of gaps) shape("line", { x1: x, x2: x, y1: 20, y2: 200, class: "chart-gap", "aria-hidden": "true" });
-    for (const segment of segments) {
-      if (segment.length < 2) continue;
-      const path = segment.map((sample, index) => `${index ? "L" : "M"}${sample.x.toFixed(3)},${sample.y.toFixed(3)}`).join(" ");
-      shape("path", { d: path, class: "chart-line", "aria-hidden": "true" });
-    }
-    let restoreFocus = null;
-    for (const sample of samples) {
-      const { point } = sample;
-      const note = `${formatTimestamp(point.as_of)} | Net gain ${formatMoney(point.gain, this.currency, { signed: true })} | ${formatPercent(point.pct)} | Target ${formatMoney(point.target, this.currency)}${point.gap_before ? " | Gap before this sample" : ""}${point.legacy ? " | Legacy checkpoint" : ""}`;
-      const dot = shape("circle", { cx: sample.x, cy: sample.y, r: 5, tabindex: 0, role: "img", class: "chart-point", "data-point-key": sample.key, "aria-label": note });
-      dot.append(svgElement(this.doc, "title", {}, note));
-      dot.addEventListener("focus", () => this.text("chart-readout", note));
-      dot.addEventListener("pointerenter", () => this.text("chart-readout", note));
-      dot.addEventListener("click", () => this.text("chart-readout", note));
-      if (focusedKey === sample.key) restoreFocus = dot;
-    }
-    this.show("progress-chart", samples.length > 0);
-    this.show("chart-empty", samples.length === 0);
-    this.text("chart-empty", points === null ? "Progress history unavailable." : points.length === 0 ? "No progress observations recorded for this goal." : "No plottable gain values in this window. Available source details are in the table.");
-    this.time("chart-from", progress?.from);
-    this.time("chart-to", progress?.to);
-    this.text("chart-scale", isDecimal(progress?.min_pct) && isDecimal(progress?.max_pct) ? `Window scale ${formatPercent(progress.min_pct, { compact: true })} to ${formatPercent(progress.max_pct, { compact: true })}` : "Scale unavailable");
-    const coverage = ["Recent current-goal window only. Straight lines join recorded samples, not continuous observations."];
-    if (progress?.incomplete === true || cursor(progress?.next_cursor) !== null) coverage.push("Coverage is incomplete; earlier or missing observations are not reconstructed.");
-    if (gaps.length) coverage.push("Vertical dashed marks and line breaks show reported gaps.");
-    if (points?.some((point) => point.legacy)) coverage.push("Legacy checkpoint values are timestamped samples; detailed history was not recorded.");
-    if (targetY === null && points?.length) coverage.push("The target reference coordinate is unavailable.");
-    this.text("chart-coverage", coverage.join(" "));
-    this.text("chart-table-summary", points === null ? "Exact observations unavailable" : `View exact observations (${points.length})`);
-    this.text("chart-readout", samples.length ? "Focus or point to a sample for exact values. All values are also in the table." : "Exact available source values are shown in the observations table.");
-    const tbody = this.node("chart-table-body");
-    tbody.replaceChildren();
-    for (const point of points ?? []) {
-      const row = element(this.doc, "tr");
-      for (const [value, numeric, exact] of [
-        [formatTimestamp(point.as_of), false, point.as_of],
-        [formatMoney(point.gain, this.currency, { signed: true }), true, point.gain],
-        [formatPercent(point.pct), true, point.pct],
-        [formatMoney(point.target, this.currency), true, point.target],
-        [`${text(point.snapshot_id)}${point.gap_before ? " / gap before" : ""}${point.legacy ? " / legacy checkpoint" : ""}`, false, null],
-      ]) {
-        const cell = element(this.doc, "td", value, numeric ? "numeric" : undefined);
-        if (typeof exact === "string") cell.title = exact;
-        row.append(cell);
-      }
-      tbody.append(row);
-    }
-    if (!points?.length) {
-      const row = element(this.doc, "tr");
-      const cell = element(this.doc, "td", points === null ? "Observation values unavailable." : "No recorded samples in this window.");
-      cell.colSpan = 5;
-      row.append(cell);
-      tbody.append(row);
-    }
-    restoreFocus?.focus({ preventScroll: true });
-  }
-
   renderActivity(state) {
     const { activity } = state;
+    const visible = this.activityExpanded ? activity : activity?.slice(0, ACTIVITY_PREVIEW_SIZE);
     this.show("activity-empty", !activity?.length);
     this.text("activity-empty", state.needsRefresh ? "Account or goal changed. Reading its recent activity window." : activity === null ? "Activity unavailable. Missing history is not evidence that no actions occurred." : "No activity recorded in the available window for this goal.");
-    this.text("activity-note", `${Array.isArray(activity) ? `${activity.length} loaded events for this account and goal. ` : ""}Older pages load only on request.${state.historyGap ? " Loaded pages may have a gap between refreshes; omitted events are not reconstructed." : " This is recorded history, not a continuous execution feed."}`);
-    this.rows("activity-list", activity ?? [], (item) => String(item.id), (row, item) => {
+    const count = Array.isArray(activity) ? activity.length : null;
+    let coverage = "";
+    if (this.activityExpanded) coverage = `${count ?? 0} recorded events loaded${state.cursor === null ? state.historyGap ? "; the loaded history may still have a reported gap" : " for the complete available history" : " so far"}. `;
+    else if (count === 0 && state.cursor !== null) coverage = "No matching events are in the newest loaded page; older recorded activity is available. ";
+    else if (count !== null && (count > ACTIVITY_PREVIEW_SIZE || state.cursor !== null)) coverage = `Showing the newest ${Math.min(count, ACTIVITY_PREVIEW_SIZE)} of ${state.cursor !== null ? "at least " : ""}${count} recorded events. `;
+    else if (count !== null) coverage = `Showing ${count} recorded ${count === 1 ? "event" : "events"}. `;
+    this.text("activity-note", `${coverage}${state.historyGap ? "Loaded pages may have a gap between refreshes; omitted events are not reconstructed." : "This is recorded history, not a continuous execution feed."}`);
+    this.rows("activity-list", visible ?? [], (item) => String(item.id), (row, item) => {
       row.details.className = "event-row";
       row.body.className = "event-body";
       const journal = journalForScope(state.data, item.journal);
@@ -696,45 +595,6 @@ class DashboardView {
     });
   }
 
-  renderOrders(orders) {
-    const all = ordersForFilter(orders);
-    const visible = ordersForFilter(orders, this.filter);
-    this.text("orders-total", all === null ? UNAVAILABLE : `${all.length} recorded`);
-    this.node("order-filter").disabled = all === null;
-    this.show("orders-empty", !visible?.length);
-    this.text("orders-empty", all === null ? "Pending order list unavailable. This does not mean there are no broker orders." : all.length === 0 ? "No broker pending orders in this source observation." : "No recorded orders match this filter. Other account orders remain in the all-orders view.");
-    this.rows("orders-list", all ?? [], (order) => typeof order.ticket === "string" ? order.ticket : null, (row, order) => {
-      row.details.className = "order-row";
-      const identity = element(this.doc, "span", undefined, "order-identity");
-      identity.append(element(this.doc, "span", text(order.symbol), "order-symbol"), element(this.doc, "span", `Ticket ${text(order.ticket)}`, "order-ticket numeric"));
-      const classification = element(this.doc, "span", undefined, "order-classification");
-      const kind = order.kind === "entry" ? "Entry" : order.kind === "protective" ? "Protective" : "Kind unavailable";
-      classification.append(element(this.doc, "span", kind, "order-type"), element(this.doc, "span", `${orderDetail(order, "side")} / ${orderDetail(order, "ownership")}`, "order-sub"));
-      const remaining = element(this.doc, "span", undefined, "order-value numeric");
-      remaining.append(element(this.doc, "span", "Lots left", "mobile-label"), element(this.doc, "span", orderDetail(order, "volume_remaining")));
-      const risk = element(this.doc, "span", undefined, "order-value numeric");
-      risk.title = isDecimal(order.risk) ? `${order.risk} ${text(this.currency)} (exact)` : UNAVAILABLE;
-      risk.append(element(this.doc, "span", "Stressed risk", "mobile-label"), element(this.doc, "span", formatMoney(order.risk, this.currency)));
-      const toggle = element(this.doc, "span", undefined, "row-toggle");
-      toggle.setAttribute("aria-hidden", "true");
-      row.summary.replaceChildren(identity, classification, remaining, risk, toggle);
-      row.body.replaceChildren();
-      const list = element(this.doc, "dl", undefined, "order-fields");
-      definition(this.doc, list, "Order type", orderDetail(order, "order_type"));
-      definition(this.doc, list, "Side", orderDetail(order, "side"));
-      definition(this.doc, list, "Ownership", orderDetail(order, "ownership"));
-      definition(this.doc, list, "Protective stop verified", order.protected === true ? "Protected" : order.protected === false ? "Not protected" : UNAVAILABLE);
-      for (const [field, label] of Object.entries({ volume_initial: "Original volume", volume_remaining: "Remaining volume", entry_price: "Entry price", stop_limit_price: "Stop-limit price", stop_loss: "Stop loss", take_profit: "Take profit", placed_at: "Placed at", expires_at: "Expires at" })) {
-        definition(this.doc, list, label, orderDetail(order, field), !field.endsWith("_at"), order.details?.[field]);
-      }
-      definition(this.doc, list, "Related position ticket", text(order.position_ticket), true);
-      definition(this.doc, list, "Stressed risk", formatMoney(order.risk, this.currency), true, order.risk);
-      row.body.append(list, element(this.doc, "p", order.details == null ? "Display enrichment is unavailable. This order exists in the saved broker snapshot; no side, price or ownership is inferred." : "Details are agent-supplied for the source snapshot. Ownership is not inferred from a ticket or local intent.", "order-detail-note"));
-    });
-    const visibleTickets = new Set((visible ?? []).map((order) => order.ticket));
-    for (const [ticket, row] of this.rowCaches.get("orders-list") ?? []) row.li.hidden = !visibleTickets.has(ticket);
-  }
-
   renderIntents(intents) {
     const items = Array.isArray(intents?.items) ? intents.items.filter(record) : null;
     this.text("intents-count", formatCount(intents?.count));
@@ -759,9 +619,28 @@ class DashboardView {
     this.text("refresh-button", busy ? "Reading..." : "Refresh now");
     this.node("refresh-button").setAttribute("aria-disabled", busy ? "true" : "false");
     this.text("reader-state", busy ? "Reading local API" : controller.error ? `Read failed / retry within ${pollDelay(this.doc.hidden, controller.failures) / 1000}s` : `UI refresh / ${pollDelay(this.doc.hidden, controller.failures) / 1000}s`);
-    this.text("older-button", older ? "Loading older activity..." : "Load older activity");
-    this.node("older-button").disabled = busy || !controller.state?.cursor;
-    this.text("older-state", older ? "Reading one older page" : controller.state?.needsRefresh ? "Refreshing the changed account/goal" : controller.state?.activity === null || !controller.state ? "" : controller.state.cursor === null ? "No older page available" : "Current view is retained");
+    const activity = controller.state?.activity;
+    const loaded = Array.isArray(activity) ? activity.length : 0;
+    const hasMore = cursor(controller.state?.cursor) !== null;
+    const canToggle = Array.isArray(activity) && (this.activityExpanded || loaded > ACTIVITY_PREVIEW_SIZE || hasMore);
+    this.show("activity-toggle", canToggle);
+    this.text("activity-toggle", this.activityExpanded ? "Show latest 5" : "View all activity");
+    this.node("activity-toggle").disabled = !canToggle;
+    this.node("activity-toggle").setAttribute("aria-expanded", this.activityExpanded ? "true" : "false");
+    this.node("activity-list").setAttribute("aria-busy", older ? "true" : "false");
+    let activityState = "";
+    if (controller.state?.needsRefresh) activityState = "Refreshing the changed account or goal";
+    else if (activity === null) activityState = "Activity unavailable";
+    else if (this.activityExpanded && older) activityState = `Loading older activity / ${loaded} events loaded`;
+    else if (this.activityExpanded && controller.activityPaginationStalled) activityState = controller.activityPaginationReason === "failures"
+      ? `View all stopped after ${ACTIVITY_PAGE_RETRIES} failed reads of the same older page / ${loaded} events loaded`
+      : `View all stopped because the activity cursor did not advance / ${loaded} events loaded`;
+    else if (this.activityExpanded && controller.error && hasMore) activityState = `View all paused after ${loaded} events / retrying the reader`;
+    else if (this.activityExpanded && controller.error) activityState = `${loaded} last-known events shown / latest read failed`;
+    else if (this.activityExpanded && hasMore) activityState = `Preparing older activity / ${loaded} events loaded`;
+    else if (this.activityExpanded) activityState = controller.state?.historyGap ? `${loaded} events shown / loaded history may have a gap` : `${loaded} events shown / complete available history`;
+    else if (canToggle) activityState = `Latest ${Math.min(loaded, ACTIVITY_PREVIEW_SIZE)} shown`;
+    this.text("activity-state", activityState);
   }
 }
 
@@ -778,6 +657,10 @@ export class DashboardController {
     this.sequence = 0;
     this.inFlight = null;
     this.refreshQueued = false;
+    this.activityCursors = new Set();
+    this.activityCursorFailures = new Map();
+    this.activityPaginationStalled = false;
+    this.activityPaginationReason = null;
     this.timer = null;
     this.ageTimer = null;
     this.stopped = true;
@@ -788,10 +671,16 @@ export class DashboardController {
       this.view.controls(this);
     };
     this.onRefresh = () => { if (!this.inFlight) this.request(); };
-    this.onOlder = () => { if (!this.inFlight && this.state?.cursor) this.request(this.state.cursor); };
-    this.onFilter = () => {
-      this.view.filter = this.view.node("order-filter").value;
-      this.view.renderOrders(this.state?.data?.pending_orders);
+    this.onActivityToggle = () => {
+      if (!Array.isArray(this.state?.activity)) return;
+      this.view.activityExpanded = !this.view.activityExpanded;
+      this.activityCursors.clear();
+      this.activityCursorFailures.clear();
+      this.activityPaginationStalled = false;
+      this.activityPaginationReason = null;
+      this.view.renderActivity(this.state);
+      this.view.controls(this);
+      if (this.view.activityExpanded && !this.inFlight) this.loadNextActivityPage();
     };
     this.onPageHide = () => this.stop();
     this.onPageShow = () => { if (this.stopped) this.start(); };
@@ -802,8 +691,7 @@ export class DashboardController {
     this.stopped = false;
     this.doc.addEventListener("visibilitychange", this.onVisibility);
     this.view.node("refresh-button").addEventListener("click", this.onRefresh);
-    this.view.node("older-button").addEventListener("click", this.onOlder);
-    this.view.node("order-filter").addEventListener("change", this.onFilter);
+    this.view.node("activity-toggle").addEventListener("click", this.onActivityToggle);
     this.doc.defaultView?.addEventListener("pagehide", this.onPageHide);
     this.doc.defaultView?.addEventListener("pageshow", this.onPageShow);
     this.ageTimer = setInterval(() => {
@@ -821,16 +709,39 @@ export class DashboardController {
     this.inFlight?.abort.abort();
     this.inFlight = null;
     this.refreshQueued = false;
+    this.activityCursors.clear();
+    this.activityCursorFailures.clear();
+    this.activityPaginationStalled = false;
+    this.activityPaginationReason = null;
     this.doc.removeEventListener("visibilitychange", this.onVisibility);
     this.view.node("refresh-button").removeEventListener("click", this.onRefresh);
-    this.view.node("older-button").removeEventListener("click", this.onOlder);
-    this.view.node("order-filter").removeEventListener("change", this.onFilter);
+    this.view.node("activity-toggle").removeEventListener("click", this.onActivityToggle);
     this.doc.defaultView?.removeEventListener("pagehide", this.onPageHide);
   }
 
   schedule() {
     clearTimeout(this.timer);
     if (!this.stopped) this.timer = setTimeout(() => this.request(), pollDelay(this.doc.hidden, this.failures));
+  }
+
+  loadNextActivityPage() {
+    const next = cursor(this.state?.cursor);
+    if (this.stopped || this.doc.hidden || this.inFlight || !this.view.activityExpanded || this.activityPaginationStalled || next === null) return false;
+    if ((this.activityCursorFailures.get(next) ?? 0) >= ACTIVITY_PAGE_RETRIES) {
+      this.activityPaginationStalled = true;
+      this.activityPaginationReason = "failures";
+      this.view.controls(this);
+      return false;
+    }
+    if (this.activityCursors.has(next)) {
+      this.activityPaginationStalled = true;
+      this.activityPaginationReason = "cursor";
+      this.view.controls(this);
+      return false;
+    }
+    this.activityCursors.add(next);
+    this.request(next);
+    return true;
   }
 
   async request(before = null) {
@@ -857,7 +768,24 @@ export class DashboardController {
       }
       const next = mergeDashboardPage(this.state, data, { before, requestScope, requestId, latestRequestId: this.sequence });
       if (next === this.state) throw new Error("revision_regressed");
+      const previousScope = this.state?.scope;
+      const previousCursor = this.state?.cursor;
       this.state = next;
+      if (previousScope !== next.scope) {
+        this.activityCursors.clear();
+        this.activityCursorFailures.clear();
+        this.activityPaginationStalled = false;
+        this.activityPaginationReason = null;
+      } else if (before === null && previousCursor !== next.cursor) {
+        this.activityCursors.clear();
+        this.activityCursorFailures.clear();
+        this.activityPaginationStalled = false;
+        this.activityPaginationReason = null;
+      } else if (before !== null) {
+        this.activityCursorFailures.delete(before);
+        this.activityPaginationStalled = next.cursor !== null && next.cursor >= before;
+        this.activityPaginationReason = this.activityPaginationStalled ? "cursor" : null;
+      }
       this.error = null;
       this.failures = 0;
       this.successfulAt = new Date(this.clock()).toISOString();
@@ -865,6 +793,15 @@ export class DashboardController {
       if (next.needsRefresh) this.refreshQueued = true;
     } catch (error) {
       if (requestId !== this.sequence || this.stopped) return;
+      if (before !== null) {
+        this.activityCursors.delete(before);
+        const failures = (this.activityCursorFailures.get(before) ?? 0) + 1;
+        this.activityCursorFailures.set(before, failures);
+        if (failures >= ACTIVITY_PAGE_RETRIES) {
+          this.activityPaginationStalled = true;
+          this.activityPaginationReason = "failures";
+        }
+      }
       this.failures = Math.min(this.failures + 1, 3);
       this.error = timedOut ? "request_timeout" : typeof error?.message === "string" && /^[a-z0-9_]{1,100}$/.test(error.message) ? error.message : "reader_unavailable";
       this.view.render(this.state, { error: this.error, successfulAt: this.successfulAt, now: this.clock() });
@@ -876,6 +813,8 @@ export class DashboardController {
         if (this.refreshQueued && !this.stopped) {
           this.refreshQueued = false;
           this.request();
+        } else if (!this.error && this.loadNextActivityPage()) {
+          // The bounded cursor chain remains sequential through request().
         } else this.schedule();
       }
     }
