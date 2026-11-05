@@ -8,7 +8,7 @@ The only user-supplied trading settings are a positive monetary trailing-loss **
 
 Apply this workflow to requests to connect or reconnect to the MT5 MCP, set a budget or target, report trading progress, or trade. An unqualified request such as "connect to the MCP" starts or resumes onboarding. An explicit request such as "only check the connection" or "connect without setup" is read-only and does not start risk setup. Unrelated MCP connections are outside this workflow. Repository maintenance, editing these instructions, and arithmetic examples never authorize account setup or orders.
 
-Starting or viewing the [local dashboard](README.md#local-dashboard) is also read-only: it does not initiate onboarding, refresh MCP, run the agent, change settings or activate state. It adds no trading settings or approval requirements.
+Ace automatically starts or reuses the [local dashboard](README.md#local-dashboard) for ordinary sessions under [Automatic Dashboard](#automatic-dashboard). Starting or viewing it is read-only: it does not initiate onboarding, refresh MCP, run the agent, change settings or activate state. It adds no trading settings or approval requirements.
 
 Any AI client may use these files. If it does not automatically discover `AGENTS.md`, the user must load/register this file as its instructions. Do not generate client-specific configuration, agent definitions, or commands in this repository.
 
@@ -22,6 +22,15 @@ Before every trading session, explicitly read all four files, relative to this r
 - [Loop sessions](instructions/loop.md)
 
 If a required file, MCP access, reliable local Python/SQLite access, or a needed user response is unavailable, block new exposure and report the missing capability. Never simulate tools, connection, persisted state, or approval. A helper/database failure must not delay previously authorized, identity-verified emergency reductions.
+
+## Automatic Dashboard
+
+At the beginning or resumption of an ordinary Ace session for connection/reconnection, monetary setup, trading or progress reporting, ensure the local dashboard is running without requiring the user to launch it manually. Also start it for an explicit dashboard request. Respect an explicit opt-out or connection-only check; unrelated repository maintenance does not start it.
+
+1. Run `python scripts/dashboard.py` from the repository root using the client's supported, tracked background-process facility and an available Python 3.10+ interpreter. Outside the root, use the absolute script path. Use a session-managed process; do not install an OS startup service, create client-specific configuration, or detach a child from `account_check.py`.
+2. The command starts the viewer or returns the URL of an already-running instance only after its local `/api/health` identity matches this workspace and checkpoint. Reuse that instance rather than launching duplicates. Verify actual readiness before reporting the URL, normally `http://127.0.0.1:8765`. An occupied port, TCP connection or unrelated web page is not proof of the correct viewer. Never stop another process or silently use a different checkpoint to make startup succeed.
+3. Keep the server independent of AI turns. Start it before entering a trading loop where possible; never wait for the server to exit, restart it every candle, or let a background-process wait suspend the trading goal. If the host cannot run it independently, or a tool permission/startup/readiness check fails, report the dashboard-only limitation and continue the otherwise permitted workflow. Do not bypass client permissions or introduce an extra trading approval.
+4. Required account checks and already-authorized emergency reductions take precedence. Do not put dashboard startup between `prepare` and dispatch or delay protection for it. Startup and health checks do not open, create or activate the account database, refresh MCP, or call `check`, `cycle` or `journal`. A ready viewer is not evidence of a connected broker, a running trading agent or fresh account data.
 
 ## Onboarding Order
 

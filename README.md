@@ -6,7 +6,15 @@
 
 Client-neutral instructions for an AI agent that analyses markets and trades a MetaTrader 5 (MT5) account through an MT5 Model Context Protocol (MCP) server, with a small Python/SQLite account checker and a separate read-only local dashboard. You supply a monetary trailing-loss budget and a profit target; the agent reads the market itself and decides which orders to place. The mandate covers the whole named account, including manual exposure.
 
-Version: **[1.5.0](VERSION)** | [Changelog](CHANGELOG.md)
+Version: **[1.6.0](VERSION)** | [Changelog](CHANGELOG.md)
+
+## v1.6.0 Highlights
+
+- **Account Desk:** a responsive, read-only [local dashboard](#local-dashboard) showing the approved target, net progress, sampled history, risk headroom and stop/closure state.
+- **Visible decisions:** a source-bound [decision journal](instructions/risk-management.md#journal-reports) explaining entries, management, exits and reasons for waiting, with pending-order details kept separate from unresolved local actions.
+- **Automatic startup:** Ace starts or reuses the matching viewer during normal sessions, without a separate terminal, frontend build or new trading approval. Startup respects the client's process permissions and leaves unrelated services alone.
+
+Existing checkpoints retain their approved limits, baselines and latches; the SQLite schema stays at version 2. Richer history and explanations appear as the agent records new observations and reports, not by inventing or backfilling older activity. See the [changelog](CHANGELOG.md) for the full release history.
 
 ## Getting Started
 
@@ -14,7 +22,7 @@ Version: **[1.5.0](VERSION)** | [Changelog](CHANGELOG.md)
 2. Have the client read all four instruction files below before every trading session.
 3. Make Python 3.10+ and its standard-library SQLite support available to the client for local helper execution. No database server, installed service, or network-enabled Python trading bridge is needed.
 4. Connect an existing MT5 MCP server through your client's secure setup. Keep credentials outside this repository and out of chat; execution still follows the client's tool permissions.
-5. Ask the client to connect to the MT5 MCP to begin onboarding. A request to "only check the connection" remains read-only and does not start setup.
+5. Ask the client to connect to the MT5 MCP to begin onboarding. Ace also starts or reuses its local dashboard automatically. A request to "only check the connection" remains read-only and does not start setup or the viewer.
 
 The whole flow: connect and verify the account -> give one budget and one target -> Ace discovers the broker's instruments and analyses current conditions through MCP -> one approval of the named account and limits -> Ace places and manages as many qualifying orders as fit the remaining budget -> at either trigger it cancels pending entries and closes every position.
 
@@ -62,13 +70,27 @@ The SQLite file is the sole local account checkpoint and must stay private. A mi
 
 ## Local Dashboard
 
-From the repository root, run:
+Ace automatically starts or reuses the dashboard when an ordinary connection, setup,
+trading or progress-reporting session begins or resumes, and reports its URL. You do not
+need to launch a separate terminal. This uses the AI client's supported background-process
+facility and respects its permissions; an explicit opt-out or connection-only check skips
+startup. If that facility is unavailable, Ace reports the viewer limitation without
+delaying required trading checks or authorized protection. See
+[Automatic Dashboard](AGENTS.md#automatic-dashboard).
+
+The same command remains available for manual use from the repository root:
 
 ```text
 python scripts/dashboard.py
 ```
 
 Open `http://127.0.0.1:8765`. Python 3.10+ and its standard library are sufficient; there are no external Python packages, frontend dependencies or build steps. Optional CLI flags are `--port <port>` and `--db <path>`; the default database is repository-root `ace_state.sqlite3`. The browser cannot choose a database path. An alternate path is for a fixture or an explicitly managed checkpoint, not a second trading ledger.
+
+Repeated launches reuse an existing server only when `/api/health` matches the workspace
+and checkpoint. This endpoint returns a nonsecret viewer identity, not account data, and
+does not open SQLite. A different service or checkpoint on the port is left untouched and
+reported as a startup failure. The viewer follows the client's process lifetime; this is
+not an OS startup task, a trading daemon or proof that the AI is executing between turns.
 
 The separate loopback HTTP server serves static UI files and read-only GET routes, opening SQLite with `mode=ro`. It cannot trade, change settings, approve or activate state, start the agent, or refresh MCP. Starting or viewing it does not begin onboarding or grant trading authority; it needs no client-specific configuration.
 
@@ -80,7 +102,7 @@ Page refresh rereads saved records, not a continuous broker feed. Freshness foll
 
 "Keep working until the budget or the target is hit" is a [loop session](instructions/loop.md), not a background service. Ace records each cycle with `cycle`, wakes at the next closed candle of the approved entry timeframe instead of a fixed polling interval, and retries MCP outages with a 5/10/20/30-second backoff instead of stopping. A session never ends because the market is quiet, the instrument is closed, or an outage occurred: only an observed loss or target latch ends it, and only after the account is verified flat. When the client stops executing turns the session is recorded as interrupted with an explicit gap, and the next run resumes it — nothing claims to be watching the account in between.
 
-
+## Safety Model
 
 - The fixed-money budget trails the highest cash-flow-adjusted equity actually observed since policy approval. It is not a starting-equity floor, cumulative losing-trade total, or daily allowance. The target is additional account equity gain since its approved baseline, adjusted for external cash flows and estimated incremental closing costs not already reflected in equity.
 - All account equity, costs, manual exposure and pending orders count, even when equity greatly exceeds the budget. The budget is not segregated capital. Broker stops and verified economics/sizing/margin are mandatory; existing stressed exposure plus proposed risk, costs exactly once and a safety margin must be strictly below remaining monetary headroom. Equality or an unaffordable minimum lot means no entry, not greater leverage or wider stops.
@@ -88,3 +110,14 @@ Page refresh rereads saved records, not a continuous broker feed. Freshness foll
 - Both stops persist across reconnects, new days, equity recovery and corrections. Final profit below target does not resume trading: report the trigger, pending closure, verified final result and shortfall separately. A same-policy new goal preserves the observed risk peak and cannot release a loss latch; a risk reset needs explicit replacement-policy approval.
 - There is NO independent continuous guard/service. Only snapshots supplied while the AI is active check the monetary limits. Missed peaks/breaches, price gaps, slippage, inactivity and closure delays can produce overshoots; neither cap, target return nor completion time is guaranteed.
 - Unknown/stale data, invalid state, missing helper, uncertain execution or absent authority blocks new exposure. Do not blindly retry an ambiguous order. Previously authorized identity-verified emergency reductions must not wait for a database repair or an entry signal; actual tool permissions and safe broker targeting still apply.
+
+## Tests
+
+From the repository root:
+
+```text
+python -m unittest discover -s tests -v
+node --test tests/test_dashboard.mjs
+```
+
+The tests use synthetic temporary checkpoints, not the real account database or MT5. Python covers the helper, read-only API and safe startup/reuse; Node.js covers frontend formatting, rendering and state handling. Node.js is only needed for frontend tests, not to run the dashboard.

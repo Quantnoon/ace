@@ -4,8 +4,10 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import timedelta
 from decimal import Decimal
+import errno
 import http.client
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -13,7 +15,7 @@ import subprocess
 import sys
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts import account_check as checker
 from scripts import dashboard
@@ -79,6 +81,85 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.f.db.read_bytes(), before)
         with closing(sqlite3.connect(self.f.db)) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+
+    def test_health_and_repeated_start_do_not_open_or_create_account_state(self):
+        with patch.object(sqlite3, "connect", side_effect=AssertionError("health must not open account state")):
+            server = self.server()
+            status, headers, body = self.request(server, "/api/health")
+            identity = json.loads(body)
+            self.assertEqual(status, 200)
+            self.assertEqual(identity, dashboard.dashboard_identity(self.f.db))
+            self.assertEqual(headers["Cache-Control"], "no-store")
+            self.assertNotIn(str(self.f.db), body.decode())
+            self.assertNotIn(str(dashboard.ROOT), body.decode())
+            self.assertNotIn("account", identity)
+            self.assertTrue(dashboard.is_dashboard_running(self.f.db, server.server_port))
+            with self.assertRaises(OSError):
+                dashboard.create_server(self.f.db, server.server_port)
+            with patch("sys.stdout", new_callable=io.StringIO) as output:
+                result = dashboard.main(["--db", str(self.f.db), "--port", str(server.server_port)])
+            self.assertEqual(result, 0)
+            self.assertIn("already running", output.getvalue())
+            self.assertEqual(self.request(server, "/api/health")[0], 200)
+        self.assertFalse(self.f.db.exists())
+
+    def test_cli_reuses_the_same_workspace_and_database_from_another_directory(self):
+        self.f.start()
+        before = self.f.db.read_bytes()
+        server = self.server()
+        result = subprocess.run([sys.executable, dashboard.__file__, "--db", str(self.f.db), "--port", str(server.server_port)],
+                                cwd=self.f.temp.name, capture_output=True, text=True, timeout=5, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already running", result.stdout)
+        self.assertEqual(self.f.db.read_bytes(), before)
+
+    def test_other_checkpoint_or_workspace_is_not_reused_or_stopped(self):
+        server = self.server()
+        other_db = self.f.db.with_name("different.sqlite3")
+        self.assertFalse(dashboard.is_dashboard_running(other_db, server.server_port))
+        with patch.object(dashboard, "ROOT", self.f.db.parent / "different-workspace"):
+            self.assertFalse(dashboard.is_dashboard_running(self.f.db, server.server_port))
+        with patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(dashboard.main(["--db", str(other_db), "--port", str(server.server_port)]), 1)
+        self.assertTrue(dashboard.is_dashboard_running(self.f.db, server.server_port))
+        self.assertFalse(other_db.exists())
+        self.assertFalse(self.f.db.exists())
+
+    def test_readiness_rejects_foreign_redirected_malformed_and_oversized_responses(self):
+        identity = dashboard.dashboard_identity(self.f.db)
+        response = Mock()
+        connection = Mock()
+        connection.getresponse.return_value = response
+        variants = [(302, "application/json", checker.encode(identity).encode()),
+                    (200, "text/html", checker.encode(identity).encode()),
+                    (200, "application/json", b"not JSON"),
+                    (200, "application/json", b"x" * 4097),
+                    (200, "application/json", checker.encode(dict(identity, service="another-app")).encode()),
+                    (200, "application/json", checker.encode(dict(identity, api_version=True)).encode()),
+                    (200, "application/json", checker.encode(dict(identity, read_only=1)).encode())]
+        with patch.object(dashboard, "HTTPConnection", return_value=connection):
+            for status, content_type, body in variants:
+                with self.subTest(status=status, content_type=content_type, size=len(body)):
+                    response.status = status
+                    response.getheader.return_value = content_type
+                    response.read.return_value = body
+                    self.assertFalse(dashboard.is_dashboard_running(self.f.db, 8765))
+                    connection.request.assert_called_with("GET", "/api/health", headers={"Accept": "application/json"})
+                    connection.close.assert_called()
+            connection.request.side_effect = TimeoutError
+            self.assertFalse(dashboard.is_dashboard_running(self.f.db, 8765))
+        with patch.object(dashboard, "create_server", side_effect=OSError(errno.EACCES, "denied")), \
+                patch.object(dashboard, "is_dashboard_running") as probe, patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(dashboard.main(["--db", str(self.f.db)]), 1)
+            probe.assert_not_called()
+
+    def test_health_has_the_same_origin_and_method_restrictions(self):
+        server = self.server()
+        self.assertEqual(self.request(server, "/api/health", headers={"Host": "foreign.example"})[0], 403)
+        self.assertEqual(self.request(server, "/api/health", headers={"Origin": "https://foreign.example"})[0], 403)
+        self.assertEqual(self.request(server, "/api/health", method="POST")[0], 405)
+        self.assertEqual(self.request(server, "/api/health", method="HEAD")[2], b"")
+        self.assertEqual(self.request(server, "/api/health?before=1")[0], 404)
 
     def test_draft_and_active_targets_are_distinct(self):
         self.f.draft(budget="5", target="15")

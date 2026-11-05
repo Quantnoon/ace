@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-05
+
+### Added
+
+- Responsive, read-only [Ace Account Desk](README.md#local-dashboard) with the approved target, net gain, remaining target, signed percentage, sampled progress chart, account-wide risk and persistent stop/closure state.
+- Recorded decision timeline and pending-order details, including reasons for waiting, entry/stop prices, quantities and reported ownership where available. Manual and protective pending orders remain visible; unresolved local intentions and settled requests are not presented as verified fills.
+- Isolated `journal` helper command for concise explanations and normalized pending-order details bound to the latest accepted snapshot. Reporting advances the revision without granting dispatch permission or changing financial metrics, source timestamps, approvals, latches, intents or cycle state.
+- Versioned display-event metadata containing finalized observation results, including liquidation outcome and shortfall, for current-goal history. Exact decimal values, source age, observation gaps and unavailable legacy information are preserved without backfill.
+- Standard-library Python local server with read-only SQLite access, bounded history pagination, fixed static routes, Host/Origin checks and restricted browser responses. The `/api/health` endpoint identifies the workspace/checkpoint without reading account state; Windows listeners use exclusive port binding.
+- Synthetic Python and frontend regression tests for reporting isolation, monetary precision, order/intent distinctions, read-only access, startup/reuse, freshness, rendering and persistent stop behavior.
+
+### Changed
+
+- Normal Ace connection, setup, trading and progress sessions automatically start or reuse the matching dashboard through the client's managed background-process facility. Explicit opt-outs and connection-only checks skip startup; unrelated services/checkpoints are not reused or stopped.
+- Agent workflows record explanations after actual checks, management and readback/resolution, consuming the journal's returned revision before the next mutation. Dashboard startup and reporting never interrupt preparation/dispatch, delay emergency protection, add trading approvals or serve as a continuous trading guard.
+- Checkpoint schema remains version 2: display metadata uses existing state/event JSON, and version-1 checkpoints retain the existing read-only compatibility and next-write normalization. Upgrading does not reset approved limits, goal baselines, observed peaks, stop latches or unresolved actions.
+
 ## [1.5.0] - 2026-11-04
 
 ### Added

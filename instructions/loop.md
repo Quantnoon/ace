@@ -22,6 +22,12 @@ reports the last actually recorded cycle and its original timestamp. The separat
 [read-only dashboard](../README.md#local-dashboard) also shows saved records: a stored
 `loop.status: "active"` or a browser refresh is not proof of a running agent or connected MCP.
 
+Before entering a loop, follow [Automatic Dashboard](../AGENTS.md#automatic-dashboard) to
+start or reuse the session-managed viewer. Reuse it on resumption; do not launch another
+server every cycle. Never wait on its long-running process or let startup suspend the
+trading goal. An unavailable dashboard neither ends the loop nor delays required checks
+or already-authorized emergency reductions.
+
 ## Cadence: Entry-Timeframe Candles
 
 The wait between cycles follows the closed candle of the approved entry timeframe, not a

@@ -4,6 +4,8 @@
 
 This file applies to the trading workflow in [AGENTS.md](../AGENTS.md), not repository maintenance. Use the selected AI client's MCP interface; tool names and setup formats differ between clients and servers.
 
+For ordinary session startup or reconnection, also follow [Automatic Dashboard](../AGENTS.md#automatic-dashboard): start or reuse the local viewer through the client's background-process facility without asking the user to run it. Honor explicit connection-only requests. Viewer startup must not hold up required checks or emergency protection, and its local readiness response never verifies MT5 connectivity or account identity.
+
 1. Discover tools/resources already exposed to the client. Read the actual MT5 server's tool schemas and documentation. Do not invent tool names, parameters, transports, or a health API.
 2. If a candidate MT5 connection exists, make a documented read-only account/terminal request. A server name, saved configuration, TCP response, or health message alone is not proof of capability.
 3. Reuse a working verified connection. If credentials/configuration are missing or unusable, ask for the base URL and confirm the complete MCP endpoint, including its documented path. Do not guess a `/mcp` or other suffix. Reuse valid nonsecret connection inputs after a transient outage rather than requesting new secrets unnecessarily.

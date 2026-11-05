@@ -3,10 +3,15 @@
 import argparse
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
+import errno
+import hashlib
+from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import math
+import os
 from pathlib import Path
 import re
+import socket
 import sqlite3
 import sys
 from urllib.parse import parse_qs, urlsplit
@@ -408,7 +413,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if url.scheme or url.netloc or url.fragment:
                 raise ValueError
             query = parse_qs(url.query, keep_blank_values=True, strict_parsing=True, max_num_fields=1)
-            if url.path == "/api/dashboard":
+            if url.path == "/api/health" and not query:
+                self.send_json(200, self.server.identity)
+            elif url.path == "/api/dashboard":
                 if set(query) - {"before"}:
                     raise ValueError
                 before = None
@@ -445,10 +452,45 @@ class DashboardHandler(BaseHTTPRequestHandler):
     do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = unsupported_method
 
 
+def dashboard_identity(db_path):
+    paths = [os.path.normcase(str(path.resolve())) for path in (ROOT, Path(db_path))]
+    return {"service": "ace-dashboard", "api_version": 1, "read_only": True,
+            "instance_id": hashlib.sha256(checker.encode(paths).encode("utf-8")).hexdigest()}
+
+
+class DashboardServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # SO_REUSEADDR alone can allow two listeners on the same Windows port.
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.allow_reuse_address = False
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def create_server(db_path=checker.DEFAULT_DB, port=8765):
-    server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
+    server = DashboardServer(("127.0.0.1", port), DashboardHandler)
     server.db_path = Path(db_path).resolve()
+    server.identity = dashboard_identity(server.db_path)
     return server
+
+
+def is_dashboard_running(db_path, port):
+    connection = HTTPConnection("127.0.0.1", port, timeout=1)
+    try:
+        connection.request("GET", "/api/health", headers={"Accept": "application/json"})
+        response = connection.getresponse()
+        if response.status != 200 or response.getheader("Content-Type", "").split(";")[0].strip() != "application/json":
+            return False
+        body = response.read(4097)
+        if len(body) > 4096:
+            return False
+        identity = checker.decode(body.decode("utf-8"), exact_numbers=False)
+        return (isinstance(identity, dict) and type(identity.get("api_version")) is int
+                and identity.get("read_only") is True and identity == dashboard_identity(db_path))
+    except (OSError, HTTPException, ValueError, TypeError):
+        return False
+    finally:
+        connection.close()
 
 
 def main(argv=None):
@@ -460,7 +502,11 @@ def main(argv=None):
         parser.error("--port must be between 1 and 65535")
     try:
         server = create_server(args.db, args.port)
-    except OSError:
+    except OSError as error:
+        occupied = error.errno in (errno.EADDRINUSE, 10048) or getattr(error, "winerror", None) == 10048
+        if occupied and is_dashboard_running(args.db, args.port):
+            print("Ace dashboard already running: http://127.0.0.1:" + str(args.port), flush=True)
+            return 0
         print("Unable to start the local dashboard. Check the port and local permissions.", file=sys.stderr)
         return 1
     print("Ace dashboard: http://127.0.0.1:" + str(server.server_port), flush=True)
