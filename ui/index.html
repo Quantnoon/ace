@@ -30,7 +30,7 @@
   <main id="ace-dashboard" class="desk" aria-busy="true" tabindex="-1">
     <div class="page-heading">
       <div><p class="eyebrow">ONE ACCOUNT / ONE SHARED TARGET</p><h1>Target, in view.</h1></div>
-      <nav aria-label="Dashboard sections"><a href="#target">Target</a><a href="#activity">Activity</a></nav>
+      <nav aria-label="Dashboard sections"><a href="#target">Target</a><a href="#strategies">Strategies</a><a href="#activity">Activity</a></nav>
     </div>
 
     <section class="source-strip" aria-label="Observation and interface freshness">
@@ -62,6 +62,15 @@
     </section>
 
     <div id="configured-workspace" hidden>
+      <section class="session-strip" aria-label="Recorded agent-session control">
+        <dl class="session-metrics">
+          <div><dt>Agent session, requested</dt><dd id="session-status">Not recorded</dd></div>
+          <div><dt>Work phase, recorded</dt><dd id="session-phase">Unavailable</dd></div>
+          <div><dt>Next wake, planned</dt><dd><time id="session-next-wake">Unavailable</time></dd><span id="session-wake-reason" class="section-note">Unavailable</span></div>
+        </dl>
+        <p id="session-reason" class="section-note">No session-control note recorded.</p>
+        <p class="section-note">Session control is separate from campaign settlement. A continue request is not proof of a running client; source age and planned wakes remain visible. This page cannot start or stop the agent.</p>
+      </section>
       <div class="overview-grid">
         <section id="target" class="target-section" aria-labelledby="target-heading">
           <div class="section-heading"><h2 id="target-heading"><span class="section-index">01</span> Approved account target</h2><span class="tag">ACCOUNT-WIDE</span></div>
@@ -93,10 +102,22 @@
               <div><dt>Goal baseline equity</dt><dd id="baseline-equity" class="numeric">Unavailable</dd></div>
               <div><dt>Incremental close costs</dt><dd id="close-costs" class="numeric">Unavailable</dd></div>
               <div><dt>Baseline source time</dt><dd><time id="goal-start">Unavailable</time></dd></div>
-              <div><dt>Goal approved at</dt><dd><time id="goal-approved">Unavailable</time></dd></div>
+              <div><dt>Goal authorized at</dt><dd><time id="goal-approved">Unavailable</time></dd></div>
             </dl>
           </details>
           <p id="active-draft-note" class="section-note" hidden>A separate, unapproved draft is recorded. It does not replace this approved goal.</p>
+          <section class="decision-section" aria-labelledby="decision-heading">
+            <div class="section-heading"><h2 id="decision-heading"><span class="section-index">03</span> Latest recorded decision</h2></div>
+            <p class="section-note">The agent's explanation, not an authoritative execution receipt.</p>
+            <p id="journal-unavailable" class="inline-empty">No explanation recorded for this goal.</p>
+            <div id="journal-content" hidden>
+              <div class="journal-meta"><span id="journal-activity" class="tag"></span><span>Recorded <time id="journal-time">Unavailable</time></span></div>
+              <h3 id="journal-summary" class="journal-summary"></h3>
+              <p id="journal-reason" class="prose"></p>
+              <div class="next-step"><span class="eyebrow">NEXT RECORDED STEP</span><p id="journal-next" class="prose"></p></div>
+              <details class="disclosure"><summary>Supporting context &amp; source</summary><dl id="journal-details" class="context-fields"></dl></details>
+            </div>
+          </section>
         </section>
 
         <aside class="risk-section" aria-labelledby="risk-heading">
@@ -142,6 +163,9 @@
               <div><dt>Policy started</dt><dd><time id="policy-start">Unavailable</time></dd></div>
               <div><dt>Financial loop status, recorded</dt><dd id="loop-status">Unavailable</dd></div>
               <div><dt>Current execution</dt><dd id="loop-execution">Unverified</dd></div>
+              <div><dt>Agent session ID</dt><dd id="session-id" class="numeric">Unavailable</dd></div>
+              <div><dt>Session started</dt><dd><time id="session-started">Unavailable</time></dd></div>
+              <div><dt>Session control updated</dt><dd><time id="session-updated">Unavailable</time></dd></div>
               <div><dt>Loop policy ID</dt><dd id="loop-policy" class="numeric">Unavailable</dd></div>
               <div><dt>Loop goal ID</dt><dd id="loop-goal" class="numeric">Unavailable</dd></div>
               <div><dt>Loop binding verified from</dt><dd><time id="loop-binding">Unavailable</time></dd></div>
@@ -169,17 +193,13 @@
 
       <div class="records-grid">
         <div class="decisions-column">
-          <section class="decision-section" aria-labelledby="decision-heading">
-            <div class="section-heading"><h2 id="decision-heading"><span class="section-index">03</span> Latest recorded decision</h2></div>
-            <p class="section-note">The agent's explanation, not an authoritative execution receipt.</p>
-            <p id="journal-unavailable" class="inline-empty">No explanation recorded for this goal.</p>
-            <div id="journal-content" hidden>
-              <div class="journal-meta"><span id="journal-activity" class="tag"></span><span>Recorded <time id="journal-time">Unavailable</time></span></div>
-              <h3 id="journal-summary" class="journal-summary"></h3>
-              <p id="journal-reason" class="prose"></p>
-              <div class="next-step"><span class="eyebrow">NEXT RECORDED STEP</span><p id="journal-next" class="prose"></p></div>
-              <details class="disclosure"><summary>Supporting context &amp; source</summary><dl id="journal-details" class="context-fields"></dl></details>
-            </div>
+          <section id="strategies" class="strategies-section" aria-labelledby="strategies-heading">
+            <div class="section-heading"><h2 id="strategies-heading">Recorded strategies</h2><span class="eyebrow">CURRENT CAMPAIGN</span></div>
+            <p class="section-note">Original plans and recorded follow-up evidence, not live exposure or current ownership. A settled entry request can still be an unfilled pending order. Unknown plans are not inferred from symbols or tickets.</p>
+            <p id="strategies-note" class="section-note">Older strategy pages load only on request and reset when the saved revision changes.</p>
+            <p id="strategies-empty" class="inline-empty">Recorded strategies unavailable.</p>
+            <ul id="strategies-list" class="intent-list"></ul>
+            <div class="activity-controls"><button id="strategies-more" class="button" type="button" aria-controls="strategies-list" disabled hidden>Load older strategies</button><span id="strategies-state" class="muted" role="status"></span></div>
           </section>
           <section id="activity" class="activity-section" aria-labelledby="activity-heading">
             <div class="section-heading"><h2 id="activity-heading">Account activity</h2><span class="eyebrow">NEWEST FIRST</span></div>

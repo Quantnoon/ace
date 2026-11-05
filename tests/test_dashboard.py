@@ -33,8 +33,8 @@ class DashboardTests(unittest.TestCase):
         options.setdefault("now", self.f.now)
         return dashboard.read_dashboard(self.f.db, **options)
 
-    def server(self):
-        server = dashboard.create_server(self.f.db, 0)
+    def server(self, module=dashboard):
+        server = module.create_server(self.f.db, 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
 
@@ -72,15 +72,21 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertFalse(self.f.db.exists())
 
-    def test_v1_v2_v3_reads_preserve_state_and_version_one_display_envelopes(self):
+    def test_v1_v2_v3_v4_v5_reads_preserve_state_and_version_one_display_envelopes(self):
         self.f.start()
         self.f.call("journal", **self.f.journal_request())
         original = self.f.state()
         for version, status in ((1, None), (2, "active"), (2, "closing"), (2, "closed"),
-                                (3, "active"), (3, "closing"), (3, "closed")):
+                                (3, "active"), (3, "closing"), (3, "closed"),
+                                (4, "active"), (4, "closing"), (4, "closed"),
+                                (5, "active"), (5, "closing"), (5, "closed")):
             with self.subTest(version=version, status=status):
                 saved = copy.deepcopy(original)
                 saved.pop("loop", None)
+                if version < 4:
+                    saved.pop("approval_mode", None)
+                    saved["policy"].pop("approval_mode", None)
+                    saved["goal"].pop("approval_mode", None)
                 if version < 3:
                     saved.pop("observation", None)
                 if status:
@@ -88,7 +94,7 @@ class DashboardTests(unittest.TestCase):
                                      "timeframe": "M15", "last_cycle_at": saved["last_snapshot"]["as_of"],
                                      "next_cycle_at": None, "max_gap_seconds": 901,
                                      "end_reason": None if status == "active" else "target_latch"}
-                    if version == 3:
+                    if version >= 3:
                         saved["loop"].update(policy_id=saved["policy"]["id"], goal_id=saved["goal"]["id"],
                                              binding_verified_at=checker.utc(self.f.now))
                 with closing(sqlite3.connect(self.f.db)) as connection, connection:
@@ -105,8 +111,10 @@ class DashboardTests(unittest.TestCase):
                         self.assertEqual(data["revision"], self.f.revision)
                         self.assertEqual(data["api_version"], 1)
                         self.assertEqual(data["latest_journal"]["version"], 1)
+                        self.assertIsNone(data["session"])
                         self.assertTrue(data["progress"]["points"])
                         self.assertFalse(data["progress"]["points"][0]["legacy"])
+                        self.assertEqual(data["strategies"], {"items": [], "next_cursor": None})
                 self.assertEqual(loaded, expected)
                 self.assertEqual(self.f.db.read_bytes(), before)
                 with closing(sqlite3.connect(self.f.db.as_uri() + "?mode=ro", uri=True)) as connection:
@@ -181,6 +189,71 @@ class DashboardTests(unittest.TestCase):
         self.rewrite_state(lambda state: state["loop"].update(wake_reason="future_unknown_reason"))
         self.assertIsNone(self.read()["loop"]["wake_reason"])
 
+    def test_session_control_is_allowlisted_and_not_an_observation_or_progress_point(self):
+        self.f.start(approval_mode="start_request")
+        self.f.control("start")
+        self.f.call("cycle", snapshot=self.f.snap())
+        before = self.read()
+        self.f.now += timedelta(minutes=10)
+        control = self.f.control("interrupt", "synthetic:private-runtime-reference")
+        raw = self.f.db.read_bytes()
+        data = self.read()
+        self.assertEqual(self.f.db.read_bytes(), raw)
+        self.assertEqual(data["session"]["id"], control["session"]["id"])
+        self.assertEqual(data["session"]["status"], "interrupted")
+        self.assertEqual(data["session"]["execution"], "unverified")
+        self.assertNotIn("request_ref", data["session"])
+        self.assertNotIn("evidence_ref", data["session"])
+        self.assertEqual(data["snapshot"]["as_of"], before["snapshot"]["as_of"])
+        self.assertEqual(data["snapshot"]["freshness"], "stale")
+        self.assertEqual(data["metrics"], before["metrics"])
+        self.assertEqual(data["result"], before["result"])
+        self.assertEqual(data["progress"], before["progress"])
+        self.assertIsNone(data["loop"]["next_wake_at"])
+        event = data["activity"]["items"][0]
+        self.assertEqual(event["command"], "session")
+        self.assertEqual(event["decision"], "session_saved")
+        self.assertIsNone(event["snapshot_at"])
+        self.assertFalse(event["closure_verified"])
+        self.assertEqual(event["session"], data["session"])
+        self.assertNotIn("private-runtime-reference", checker.encode(data))
+        self.f.control("resume", "synthetic:host-restored")
+        self.assertEqual(self.read()["loop"]["wake_reason"], "session_check")
+        self.f.call("check", snapshot=self.f.snap())
+        self.assertTrue(self.read()["progress"]["points"][-1]["gap_before"])
+
+    def test_financial_settlement_retains_session_and_visible_monitor_wake_until_user_end(self):
+        self.f.start(config=dict(fixtures.MANDATE, latch_check_seconds=30))
+        self.f.control("start")
+        self.f.call("cycle", snapshot=self.f.snap("95"))
+        data = self.read()
+        self.assertEqual(data["session"]["status"], "active")
+        self.assertEqual(data["session"]["execution"], "unverified")
+        self.assertEqual(data["loop"]["status"], "closed")
+        self.assertEqual(data["loop"]["wake_reason"], "monitor")
+        self.assertEqual(data["loop"]["next_wake_at"], checker.utc(self.f.now + timedelta(seconds=30)))
+        self.assertTrue(data["stops"]["closure_verified"])
+        self.f.now += timedelta(seconds=31)
+        self.assertEqual(self.read()["loop"]["wake_overdue_seconds"], 1)
+        self.f.control("stop")
+        stopped = self.read()
+        self.assertEqual(stopped["session"]["status"], "stopped")
+        self.assertIsNone(stopped["loop"]["next_wake_at"])
+        self.assertIsNone(stopped["loop"]["wake_overdue_seconds"])
+        self.assertEqual(stopped["stops"], data["stops"])
+
+    def test_session_events_do_not_create_a_false_gap_between_real_observations(self):
+        self.f.start()
+        self.f.control("start")
+        self.f.call("check", snapshot=self.f.snap("101"))
+        self.f.control("interrupt")
+        self.f.control("resume")
+        self.f.call("check", snapshot=self.f.snap("102"))
+        data = self.read()
+        self.assertEqual(len(data["progress"]["points"]), 3)
+        self.assertFalse(any(point["gap_before"] for point in data["progress"]["points"]))
+        self.assertFalse(data["progress"]["incomplete"])
+
     def test_health_and_repeated_start_do_not_open_or_create_account_state(self):
         with patch.object(sqlite3, "connect", side_effect=AssertionError("health must not open account state")):
             server = self.server()
@@ -188,11 +261,14 @@ class DashboardTests(unittest.TestCase):
             identity = json.loads(body)
             self.assertEqual(status, 200)
             self.assertEqual(identity, dashboard.dashboard_identity(self.f.db))
+            self.assertEqual(identity["readable_schemas"], [1, 2, 3, 4, 5])
+            self.assertEqual(identity["reader_build"], checker.READER_BUILD)
+            self.assertEqual(identity["viewer_build"], dashboard.VIEWER_BUILD)
             self.assertEqual(headers["Cache-Control"], "no-store")
             self.assertNotIn(str(self.f.db), body.decode())
             self.assertNotIn(str(dashboard.ROOT), body.decode())
             self.assertNotIn("account", identity)
-            self.assertTrue(dashboard.is_dashboard_running(self.f.db, server.server_port))
+            self.assertEqual(dashboard.probe_dashboard(self.f.db, server.server_port), "compatible")
             with self.assertRaises(OSError):
                 dashboard.create_server(self.f.db, server.server_port)
             with patch("sys.stdout", new_callable=io.StringIO) as output:
@@ -201,6 +277,93 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("already running", output.getvalue())
             self.assertEqual(self.request(server, "/api/health")[0], 200)
         self.assertFalse(self.f.db.exists())
+
+    def test_health_is_frozen_without_rereading_deployed_files_or_account_state(self):
+        server = self.server()
+        original = copy.deepcopy(server.identity)
+        with patch.object(checker, "READER_BUILD", checker.READER_BUILD + 1), \
+                patch.object(checker, "READABLE_SCHEMA_VERSIONS", (1, 2, 3, 4, 5, 6)), \
+                patch.object(dashboard, "VIEWER_BUILD", dashboard.VIEWER_BUILD + 1), \
+                patch.object(Path, "read_bytes", side_effect=AssertionError("health must not read deployed code")), \
+                patch.object(Path, "read_text", side_effect=AssertionError("health must not read VERSION")), \
+                patch.object(sqlite3, "connect", side_effect=AssertionError("health must not open state")):
+            self.assertEqual(json.loads(self.request(server, "/api/health")[2]), original)
+            self.assertEqual(dashboard.dashboard_identity(self.f.db)["instance_id"], original["instance_id"])
+            self.assertEqual(dashboard.probe_dashboard(self.f.db, server.server_port), "restart_required")
+        self.assertEqual(dashboard.probe_dashboard(self.f.db, server.server_port), "compatible")
+        self.assertFalse(self.f.db.exists())
+
+    def test_legacy_or_incompatible_loaded_capabilities_require_viewer_only_restart(self):
+        self.f.start()
+        before = self.f.db.read_bytes()
+        server = self.server()
+        current = server.identity
+        legacy = {key: value for key, value in current.items()
+                  if key not in ("reader_build", "viewer_build", "readable_schemas")}
+        variants = [legacy]
+        for field in ("reader_build", "viewer_build", "readable_schemas"):
+            variants.append({key: value for key, value in current.items() if key != field})
+        for field in ("reader_build", "viewer_build"):
+            for value in (None, True, 1.0, "1", current[field] + 1):
+                variants.append(dict(current, **{field: value}))
+        for schemas in (None, {}, "1,2,3,4,5", [1, 2, 3, 4], [True, 2, 3, 4, 5], [1.0, 2, 3, 4, 5], [1, 2, 3, 4, "5"]):
+            variants.append(dict(current, readable_schemas=schemas))
+        with patch.object(sqlite3, "connect", side_effect=AssertionError("reuse must not open state")):
+            for identity in variants:
+                with self.subTest(identity=identity):
+                    server.identity = identity
+                    self.assertEqual(dashboard.probe_dashboard(self.f.db, server.server_port), "restart_required")
+                    with patch("sys.stderr", new_callable=io.StringIO) as error, \
+                            patch("sys.stdout", new_callable=io.StringIO) as output:
+                        result = dashboard.main(["--db", str(self.f.db), "--port", str(server.server_port)])
+                    self.assertEqual(result, 1)
+                    self.assertIn("restart required", error.getvalue())
+                    self.assertIn("restart only this viewer", error.getvalue())
+                    self.assertIn("Leave the trading agent and checkpoint unchanged", error.getvalue())
+                    self.assertNotIn("already running", output.getvalue())
+                    self.assertEqual(json.loads(self.request(server, "/api/health")[2]), identity)
+        server.identity = current
+        self.assertEqual(dashboard.probe_dashboard(self.f.db, server.server_port), "compatible")
+        self.assertEqual(self.f.db.read_bytes(), before)
+
+    def test_isolated_old_reader_rejects_a_new_writer_upgrade_until_viewer_replacement(self):
+        self.f.start()
+        with closing(sqlite3.connect(self.f.db)) as connection, connection:
+            connection.execute("PRAGMA user_version = 4")
+        spec = importlib.util.spec_from_file_location("isolated_old_checker", checker.__file__)
+        old_checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(old_checker)
+        old_checker.SCHEMA_VERSION = 4
+        old_checker.READABLE_SCHEMA_VERSIONS = (1, 2, 3, 4)
+        old_checker.READER_BUILD = 0
+        spec = importlib.util.spec_from_file_location("scripts.isolated_old_dashboard", dashboard.__file__)
+        old_dashboard = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(old_dashboard)
+        old_dashboard.checker = old_checker
+        old_dashboard.VIEWER_BUILD = 0
+        old_server = self.server(old_dashboard)
+        old_health = copy.deepcopy(old_server.identity)
+        self.assertEqual(self.request(old_server)[0], 200)
+
+        self.f.call("check", snapshot=self.f.snap("101"))
+        before = self.f.db.read_bytes()
+        with closing(sqlite3.connect(self.f.db.as_uri() + "?mode=ro", uri=True)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+        status, _, body = self.request(old_server)
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)["error"], "unsupported_schema")
+        self.assertEqual(json.loads(self.request(old_server, "/api/health")[2]), old_health)
+        self.assertEqual(dashboard.probe_dashboard(self.f.db, old_server.server_port), "restart_required")
+        with patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(dashboard.main(["--db", str(self.f.db), "--port", str(old_server.server_port)]), 1)
+        self.assertEqual(self.request(old_server)[0], 503)
+        self.assertEqual(self.read()["metrics"]["equity"], "101")
+        current_server = self.server()
+        self.assertEqual(dashboard.probe_dashboard(self.f.db, current_server.server_port), "compatible")
+        status, _, body = self.request(current_server)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["metrics"]["equity"], "101")
+        self.assertEqual(self.f.db.read_bytes(), before)
 
     def test_cli_reuses_the_same_workspace_and_database_from_another_directory(self):
         self.f.start()
@@ -215,12 +378,12 @@ class DashboardTests(unittest.TestCase):
     def test_other_checkpoint_or_workspace_is_not_reused_or_stopped(self):
         server = self.server()
         other_db = self.f.db.with_name("different.sqlite3")
-        self.assertFalse(dashboard.is_dashboard_running(other_db, server.server_port))
+        self.assertEqual(dashboard.probe_dashboard(other_db, server.server_port), "unavailable")
         with patch.object(dashboard, "ROOT", self.f.db.parent / "different-workspace"):
-            self.assertFalse(dashboard.is_dashboard_running(self.f.db, server.server_port))
+            self.assertEqual(dashboard.probe_dashboard(self.f.db, server.server_port), "unavailable")
         with patch("sys.stderr", new_callable=io.StringIO):
             self.assertEqual(dashboard.main(["--db", str(other_db), "--port", str(server.server_port)]), 1)
-        self.assertTrue(dashboard.is_dashboard_running(self.f.db, server.server_port))
+        self.assertEqual(dashboard.probe_dashboard(self.f.db, server.server_port), "compatible")
         self.assertFalse(other_db.exists())
         self.assertFalse(self.f.db.exists())
 
@@ -232,6 +395,7 @@ class DashboardTests(unittest.TestCase):
         variants = [(302, "application/json", checker.encode(identity).encode()),
                     (200, "text/html", checker.encode(identity).encode()),
                     (200, "application/json", b"not JSON"),
+                    (200, "application/json", b"[]"),
                     (200, "application/json", b"x" * 4097),
                     (200, "application/json", checker.encode(dict(identity, service="another-app")).encode()),
                     (200, "application/json", checker.encode(dict(identity, api_version=True)).encode()),
@@ -242,13 +406,13 @@ class DashboardTests(unittest.TestCase):
                     response.status = status
                     response.getheader.return_value = content_type
                     response.read.return_value = body
-                    self.assertFalse(dashboard.is_dashboard_running(self.f.db, 8765))
+                    self.assertEqual(dashboard.probe_dashboard(self.f.db, 8765), "unavailable")
                     connection.request.assert_called_with("GET", "/api/health", headers={"Accept": "application/json"})
                     connection.close.assert_called()
             connection.request.side_effect = TimeoutError
-            self.assertFalse(dashboard.is_dashboard_running(self.f.db, 8765))
+            self.assertEqual(dashboard.probe_dashboard(self.f.db, 8765), "unavailable")
         with patch.object(dashboard, "create_server", side_effect=OSError(errno.EACCES, "denied")), \
-                patch.object(dashboard, "is_dashboard_running") as probe, patch("sys.stderr", new_callable=io.StringIO):
+                patch.object(dashboard, "probe_dashboard") as probe, patch("sys.stderr", new_callable=io.StringIO):
             self.assertEqual(dashboard.main(["--db", str(self.f.db)]), 1)
             probe.assert_not_called()
 
@@ -418,6 +582,208 @@ class DashboardTests(unittest.TestCase):
             with self.assertRaisesRegex(checker.CheckError, "invalid_cursor"):
                 self.read(before=invalid)
 
+    def test_recorded_strategy_survives_prepare_gap_completion_and_unlinked_reports(self):
+        self.f.start()
+        action = self.f.entry(risk="1.250000000001", authority_ref="private-strategy-approval",
+                              parameters={"symbol": "EURUSD", "private": "private-strategy-parameters"})
+        action["context"]["strategy"]["addition_rule"] = False
+        prepared = self.f.call("prepare", snapshot=self.f.snap(), action=action)
+        self.assertTrue(prepared["may_dispatch"])
+        data = self.read()
+        item = data["strategies"]["items"][0]
+        self.assertEqual(item["intent"]["context"], checker.action_context(action["context"]))
+        self.assertEqual(item["intent"]["risk"], "1.250000000001")
+        self.assertEqual(item["intent"], data["unresolved_intents"]["items"][0])
+        self.assertEqual(item["latest_action"], item["intent"])
+        self.assertIsNone(item["latest_journal"])
+        self.f.call("resolve", intent_id="a1", outcome="completed", evidence_ref="private-strategy-receipt",
+                    broker_tickets=["still-pending"], readback_verified=True,
+                    snapshot=self.f.snap(pending_orders=[fixtures.position("still-pending", kind="entry")]))
+        self.f.call("journal", **self.f.journal_request(intent_id="a1", activity="entry",
+                                                       summary="Pending entry verified, not filled"))
+        linked_note = self.read()["latest_journal"]
+        for _ in range(3):
+            self.f.call("journal", **self.f.journal_request(summary="Unlinked wait assessment"))
+        later = self.read(now=self.f.now + timedelta(minutes=10))
+        saved = later["strategies"]["items"][0]
+        self.assertEqual(saved["intent"]["context"], item["intent"]["context"])
+        self.assertEqual(saved["intent"]["status"], "completed")
+        self.assertEqual(saved["intent"]["outcome"]["broker_tickets"], ["still-pending"])
+        self.assertEqual(saved["latest_journal"], linked_note)
+        self.assertNotEqual(saved["latest_journal"], later["latest_journal"])
+        self.assertEqual(saved["intent"]["snapshot_at"], item["intent"]["snapshot_at"])
+        self.assertEqual(later["snapshot"]["freshness"], "stale")
+        self.assertEqual(later["exposure"]["orders_count"], 1)
+        self.assertEqual(later["unresolved_intents"]["count"], 0)
+        serialized = checker.encode(later)
+        for private in ("private-strategy-approval", "private-strategy-parameters", "private-strategy-receipt",
+                        "parameters", "authority_ref", "approval_ref", "analysis_ref", "evidence_ref", "owner_id"):
+            self.assertNotIn(private, serialized)
+
+    def test_linked_management_keeps_fixed_origin_risk_and_same_symbol_ideas_separate(self):
+        self.f.start()
+        for intent_id, risk in (("idea-a", "2.25"), ("idea-b", "0.75")):
+            self.assertTrue(self.f.call("prepare", snapshot=self.f.snap(),
+                                       action=self.f.entry(intent_id, risk=risk))["may_dispatch"])
+            self.f.call("resolve", intent_id=intent_id, outcome="completed", evidence_ref="synthetic:receipt",
+                        broker_tickets=["p1"], readback_verified=True, snapshot=self.f.snap(positions=[fixtures.position()]))
+        context = {"version": 1, "operation": "trail", "rationale": "Tighten the profitable leg; submission is not verification.",
+                   "source_refs": ["synthetic:stop-read"], "origin_intent_id": "idea-a", "strategy": None}
+        self.assertTrue(self.f.call("prepare", snapshot=self.f.snap(positions=[fixtures.position()]),
+                                   action=self.f.reduction("trail-a", context=context))["may_dispatch"])
+        self.f.call("resolve", intent_id="trail-a", outcome="unknown", evidence_ref="private-partial-receipt",
+                    snapshot=self.f.snap(positions=[fixtures.position()]))
+        self.f.call("journal", **self.f.journal_request(intent_id="trail-a", activity="management",
+                                                       summary="Stop update remains unverified"))
+        self.f.call("journal", **self.f.journal_request(summary="A later unlinked wait"))
+        data = self.read()
+        first, second = data["strategies"]["items"]
+        self.assertEqual(first["intent"]["id"], "idea-b")
+        self.assertIsNone(first["latest_journal"])
+        self.assertEqual(second["intent"]["id"], "idea-a")
+        self.assertEqual(second["intent"]["risk"], "2.25")
+        self.assertEqual(second["latest_action"]["risk"], "0")
+        self.assertEqual(second["latest_action"]["status"], "unknown")
+        self.assertEqual(second["latest_action"]["context"], context)
+        self.assertEqual(second["latest_journal"]["intent_id"], "trail-a")
+        self.assertEqual(data["unresolved_intents"]["items"][0], second["latest_action"])
+        linked_events = [item for item in data["activity"]["items"] if item["intent"] and item["intent"]["id"] == "trail-a"]
+        self.assertTrue(linked_events)
+        self.assertTrue(all(item["intent"]["context"]["operation"] == "trail" for item in linked_events))
+        self.assertTrue(all(item["intent"]["outcome"]["at"] == second["latest_action"]["outcome"]["at"] for item in linked_events))
+        self.assertNotIn("private-partial-receipt", checker.encode(data))
+
+    def test_legacy_and_malformed_context_remain_unavailable_without_hiding_money(self):
+        self.f.start()
+        self.f.call("prepare", snapshot=self.f.snap(), action=self.f.entry())
+        with closing(sqlite3.connect(self.f.db)) as connection:
+            original = checker.decode(connection.execute("SELECT payload FROM intents WHERE id='a1'").fetchone()[0], exact_numbers=False)
+        initial = self.read()
+        context = original["context"]
+        variants = [None, [], dict(context, version=2), dict(context, version=True), dict(context, rationale="\x1bmalformed"),
+                    dict(context, source_refs=["../private-receipt"]), dict(context, approval_ref="private-extra"),
+                    dict(context, strategy=dict(context["strategy"], trailing_rule=None))]
+        for value in variants:
+            with self.subTest(context=value):
+                changed = dict(original, context=value)
+                with closing(sqlite3.connect(self.f.db)) as connection, connection:
+                    connection.execute("UPDATE intents SET payload=? WHERE id='a1'", (checker.encode(changed),))
+                before = self.f.db.read_bytes()
+                data = self.read()
+                self.assertEqual(data["metrics"], initial["metrics"])
+                self.assertEqual(data["stops"], initial["stops"])
+                self.assertIsNone(data["strategies"]["items"][0]["intent"]["context"])
+                self.assertIsNone(data["unresolved_intents"]["items"][0]["context"])
+                self.assertEqual(self.f.db.read_bytes(), before)
+                if value is not None:
+                    self.assertTrue(any("strategy context" in warning for warning in data["warnings"]))
+                self.assertNotIn("private-extra", checker.encode(data))
+        original.pop("context")
+        with closing(sqlite3.connect(self.f.db)) as connection, connection:
+            connection.execute("UPDATE intents SET payload=? WHERE id='a1'", (checker.encode(original),))
+            connection.execute("PRAGMA user_version=4")
+        before = self.f.db.read_bytes()
+        legacy = self.read()["strategies"]["items"][0]["intent"]
+        self.assertEqual(legacy["risk"], "1")
+        self.assertIsNone(legacy["context"])
+        self.assertEqual(self.f.db.read_bytes(), before)
+        with closing(sqlite3.connect(self.f.db)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+
+    def test_strategy_pages_are_bounded_current_campaign_only_and_read_in_one_transaction(self):
+        self.f.start()
+        for index in range(22):
+            intent_id = "idea-" + str(index)
+            self.assertTrue(self.f.call("prepare", snapshot=self.f.snap(), action=self.f.entry(intent_id))["may_dispatch"])
+            self.f.call("resolve", intent_id=intent_id, outcome="not_executed", evidence_ref="synthetic:none",
+                        readback_verified=True, snapshot=self.f.snap())
+        with closing(sqlite3.connect(self.f.db)) as connection, connection:
+            base = checker.decode(connection.execute("SELECT payload FROM intents WHERE id='idea-0'").fetchone()[0], exact_numbers=False)
+            for field in ("login", "server", "type", "currency", "policy_id", "goal_id"):
+                foreign = copy.deepcopy(base)
+                foreign["id"] = "foreign-" + field
+                (foreign["account"] if field in fixtures.ACCOUNT else foreign)[field] = "different-scope"
+                connection.execute("INSERT INTO intents(id,signal_key,status,payload) VALUES (?,NULL,'completed',?)",
+                                   (foreign["id"], checker.encode(foreign)))
+        before = self.f.db.read_bytes()
+        real_page = checker.context_page
+        calls = []
+
+        def read_page(connection, state, **options):
+            self.assertTrue(connection.in_transaction)
+            with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+                connection.execute("UPDATE intents SET status='completed'")
+            calls.append(options)
+            return real_page(connection, state, **options)
+
+        with patch.object(checker, "context_page", side_effect=read_page):
+            first = self.read()
+            second = self.read(strategy_before=first["strategies"]["next_cursor"])
+        self.assertEqual(calls, [{"before": None, "limit": 20}, {"before": first["strategies"]["next_cursor"], "limit": 20}])
+        self.assertEqual(len(first["strategies"]["items"]), 20)
+        self.assertEqual(len(second["strategies"]["items"]), 2)
+        self.assertIsNone(second["strategies"]["next_cursor"])
+        ids = [item["intent"]["id"] for item in first["strategies"]["items"] + second["strategies"]["items"]]
+        self.assertEqual(ids, ["idea-" + str(index) for index in reversed(range(22))])
+        self.assertEqual(first["metrics"], second["metrics"])
+        self.assertEqual(first["revision"], second["revision"])
+        self.assertEqual(self.f.db.read_bytes(), before)
+        self.f.draft(target="20")
+        self.f.activate_again("new_goal", self.f.snap())
+        self.assertEqual(self.read()["strategies"], {"items": [], "next_cursor": None})
+        for invalid in (0, -1, True, "1", 9223372036854775808):
+            with self.assertRaisesRegex(checker.CheckError, "invalid_cursor"):
+                self.read(strategy_before=invalid)
+        with self.assertRaisesRegex(checker.CheckError, "conflicting_cursors"):
+            self.read(before=2, strategy_before=2)
+
+    def test_optional_strategy_lookup_failure_does_not_hide_canonical_loss_status(self):
+        self.f.start()
+        self.f.call("check", snapshot=self.f.snap("95"))
+        expected = self.read()
+        for failed_page in (None, {"items": "invalid", "next_cursor": None}):
+            with patch.object(checker, "context_page", return_value=failed_page):
+                data = self.read()
+                self.assertEqual(data["stops"], expected["stops"])
+                self.assertEqual(data["metrics"], expected["metrics"])
+                self.assertIsNone(data["strategies"])
+        with patch.object(checker, "context_page", side_effect=checker.CheckError("invalid_optional_context")):
+            data = self.read()
+            self.assertEqual(data["result"]["decision"], "loss_stop")
+            self.assertIsNone(data["strategies"])
+            self.assertTrue(data["warnings"])
+
+    def test_http_strategy_pagination_is_read_only_and_rejects_scope_overrides(self):
+        self.f.start()
+        for intent_id in ("first", "second", "third"):
+            self.f.call("prepare", snapshot=self.f.snap(), action=self.f.entry(intent_id))
+            self.f.call("resolve", intent_id=intent_id, outcome="not_executed", evidence_ref="synthetic:none",
+                        readback_verified=True, snapshot=self.f.snap())
+        before = self.f.db.read_bytes()
+        server = self.server()
+        with patch.object(dashboard, "STRATEGY_PAGE_SIZE", 2):
+            status, _, body = self.request(server)
+            self.assertEqual(status, 200)
+            page = json.loads(body)
+            self.assertEqual(len(page["strategies"]["items"]), 2)
+            route = "/api/dashboard?strategy_before=" + str(page["strategies"]["next_cursor"])
+            status, _, body = self.request(server, route)
+            self.assertEqual(status, 200)
+            older = json.loads(body)
+            self.assertEqual(older["strategies"]["items"][0]["intent"]["id"], "first")
+            self.assertEqual(older["revision"], page["revision"])
+            self.assertEqual(older["metrics"], page["metrics"])
+            self.assertIsNone(older["strategies"]["next_cursor"])
+        for query in ("strategy_before=0", "strategy_before=-1", "strategy_before=1.5", "strategy_before=01",
+                      "strategy_before=9223372036854775808", "strategy_before=1&strategy_before=2",
+                      "strategy_before=2&before=2", "strategy_before=1%20OR%201=1", "origin_intent_id=first",
+                      "account=foreign", "goal_id=old", "limit=100000"):
+            self.assertEqual(self.request(server, "/api/dashboard?" + query)[0], 400, query)
+        self.assertEqual(self.request(server, route, method="POST")[0], 405)
+        self.assertEqual(self.request(server, route, headers={"Origin": "https://foreign.example"})[0], 403)
+        self.assertEqual(self.request(server, route, method="HEAD")[2], b"")
+        self.assertEqual(self.f.db.read_bytes(), before)
+
     def test_legacy_history_is_not_reconstructed_and_bad_optional_metadata_is_ignored(self):
         self.f.start()
         self.f.call("check", snapshot=self.f.snap("103"))
@@ -495,10 +861,22 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(status, 503)
             self.assertEqual(json.loads(body)["status"], "unavailable")
             self.assertNotIn(str(self.f.db), body.decode())
-        with closing(sqlite3.connect(self.f.db)) as connection, connection:
-            connection.execute("PRAGMA user_version = 999")
-        with self.assertRaisesRegex(checker.CheckError, "unsupported_schema"):
-            self.read()
+        for version in (0, 6, 999):
+            with self.subTest(version=version):
+                with closing(sqlite3.connect(self.f.db)) as connection, connection:
+                    connection.execute("PRAGMA user_version = " + str(version))
+                before = self.f.db.read_bytes()
+                with self.assertRaisesRegex(checker.CheckError, "unsupported_schema"):
+                    self.read()
+                status, _, body = self.request(server)
+                error = json.loads(body)
+                self.assertEqual(status, 503)
+                self.assertEqual(error["error"], "unsupported_schema")
+                self.assertFalse(error["ok"])
+                self.assertEqual(error["status"], "unavailable")
+                self.assertNotIn(str(self.f.db), body.decode())
+                self.assertEqual(dashboard.probe_dashboard(self.f.db, server.server_port), "compatible")
+                self.assertEqual(self.f.db.read_bytes(), before)
         with closing(sqlite3.connect(self.f.db)) as connection, connection:
             connection.execute("PRAGMA user_version = 2")
             connection.execute("UPDATE state SET payload = '{}'")

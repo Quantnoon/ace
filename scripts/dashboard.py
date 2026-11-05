@@ -23,7 +23,10 @@ else:
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# Advance for viewer/UI behavior changes, even without a schema or API change.
+VIEWER_BUILD = 3
 PAGE_SIZE = 100
+STRATEGY_PAGE_SIZE = 20
 ASSETS = {
     "/": (ROOT / "ui" / "index.html", "text/html; charset=utf-8"),
     "/dashboard.css": (ROOT / "ui" / "dashboard.css", "text/css; charset=utf-8"),
@@ -31,7 +34,7 @@ ASSETS = {
     "/assets/logo.png": (ROOT / "assets" / "logo.png", "image/png"),
 }
 DECISIONS = ("draft", "draft_saved", "prepared", "within_budget", "blocked",
-             "reconciliation_required", "loss_stop", "target_stop")
+             "reconciliation_required", "loss_stop", "target_stop", "session_saved")
 
 
 def decimal_text(value):
@@ -101,28 +104,81 @@ def journal_summary(value, state, warnings):
         return None
 
 
-def intent_view(row, state, warnings):
+def intent_summary(record, state, warnings):
     try:
-        value = checker.decode(row[1], exact_numbers=False)
+        value = record["action"]
         if not matches_scope(value, state):
             return None
-        if row[2] not in (*checker.UNRESOLVED, "completed", "not_executed") or value.get("kind") not in ("entry", "reduce"):
+        if record["status"] not in (*checker.UNRESOLVED, "completed", "not_executed") or value.get("kind") not in ("entry", "reduce"):
             raise checker.CheckError("invalid_intent_status")
-        outcome = checker.decode(row[3], exact_numbers=False) if row[3] else None
+        outcome = record.get("outcome")
         if outcome is not None:
             if not isinstance(outcome, dict) or outcome.get("outcome") not in ("completed", "not_executed", "unknown"):
                 raise checker.CheckError("invalid_intent_outcome")
             outcome = {"outcome": outcome["outcome"], "at": timestamp(outcome.get("at")),
                        "snapshot_at": timestamp(outcome.get("snapshot_at")),
                        "broker_tickets": string_list(outcome.get("broker_tickets", []))}
-        return {"id": checker.display_text(row[0], "intent_id"), "kind": value["kind"], "status": row[2],
+        context = None
+        if value.get("context") is not None:
+            try:
+                checked = checker.action_context(value["context"])
+                if (checked["operation"] in ("entry", "add")) != (value["kind"] == "entry"):
+                    raise checker.CheckError("invalid_context_operation")
+                context = {field: checked[field] for field in ("version", "operation", "rationale", "source_refs", "origin_intent_id")}
+                strategy = checked["strategy"]
+                context["strategy"] = {field: strategy[field] for field in (
+                    "name", "thesis", "side", "timeframe", "invalidation", "expiry_rule",
+                    "breakeven_rule", "trailing_rule", "addition_rule")} if strategy is not None else None
+            except (checker.CheckError, KeyError, TypeError, AttributeError):
+                context = None
+                warnings.add("Some recorded strategy context is unavailable or uses an unsupported format.")
+        return {"id": checker.display_text(record["id"], "intent_id"), "kind": value["kind"], "status": record["status"],
                 "symbol": checker.display_text(value["symbol"], "symbol") if value.get("symbol") else None,
                 "tickets": string_list(value.get("tickets", [])), "risk": decimal_text(value.get("risk")),
                 "created_at": timestamp(value.get("created_at")), "snapshot_at": timestamp(value.get("snapshot_at")),
-                "outcome": outcome}
+                "outcome": outcome, "context": context}
     except (checker.CheckError, TypeError, KeyError, InvalidOperation):
         warnings.add("Some action details are unavailable; no execution outcome is assumed.")
         return None
+
+
+def intent_view(row, state, warnings):
+    try:
+        record = {"id": row[0], "action": checker.decode(row[1], exact_numbers=False), "status": row[2],
+                  "outcome": checker.decode(row[3], exact_numbers=False) if row[3] else None}
+        return intent_summary(record, state, warnings)
+    except checker.CheckError:
+        warnings.add("Some action details are unavailable; no execution outcome is assumed.")
+        return None
+
+
+def strategies_view(page, state, warnings):
+    if page is None:
+        return None
+    if (not isinstance(page, dict) or not isinstance(page.get("items"), list)
+            or len(page["items"]) > STRATEGY_PAGE_SIZE or "next_cursor" not in page
+            or page["next_cursor"] is not None and (type(page["next_cursor"]) is not int or not 0 < page["next_cursor"] <= 9223372036854775807)):
+        warnings.add("Recorded strategies are unavailable; canonical account values are shown separately.")
+        return None
+    items = []
+    for item in page["items"]:
+        if not isinstance(item, dict):
+            warnings.add("Some recorded strategy details are unavailable.")
+            continue
+        intent = intent_summary(item.get("intent"), state, warnings)
+        if not intent or intent["kind"] != "entry":
+            continue
+        context = intent["context"]
+        if context and context["operation"] != "entry":
+            warnings.add("Some recorded strategy links are unavailable; no ownership is inferred.")
+            continue
+        latest = intent_summary(item["latest_action"], state, warnings) if item.get("latest_action") else None
+        if latest and latest["id"] != intent["id"] and (latest.get("context") or {}).get("origin_intent_id") != intent["id"]:
+            warnings.add("Some recorded strategy links are unavailable; no ownership is inferred.")
+            latest = None
+        items.append({"intent": intent, "latest_action": latest,
+                      "latest_journal": journal_summary(item.get("latest_journal"), state, warnings)})
+    return {"items": items, "next_cursor": page["next_cursor"]}
 
 
 def pending_view(state, note, warnings):
@@ -213,17 +269,31 @@ def progress_view(points, state, before, next_cursor, warnings, failures=()):
 def empty_dashboard(now):
     return {"ok": True, "api_version": 1, "status": "unconfigured", "generated_at": checker.utc(now), "revision": 0,
             "account": None, "scope": None, "snapshot": None, "policy": None, "goal": None, "draft": None,
-            "metrics": None, "result": None, "loop": None, "latest_journal": None, "pending_orders": None,
+            "metrics": None, "result": None, "loop": None, "session": None, "latest_journal": None, "pending_orders": None,
             "stops": {"loss_latched_at": None, "target_latched_at": None, "target_trigger_gain": None, "closure_verified": False},
             "exposure": {"positions_count": None, "orders_count": None, "entry_orders_count": None, "protective_orders_count": None},
-            "unresolved_intents": {"count": 0, "items": []}, "activity": {"items": [], "next_cursor": None},
-            "progress": progress_view([], {}, None, None, set()), "warnings": []}
+             "unresolved_intents": {"count": 0, "items": []}, "activity": {"items": [], "next_cursor": None},
+             "strategies": {"items": [], "next_cursor": None},
+             "progress": progress_view([], {}, None, None, set()), "warnings": []}
 
 
-def read_dashboard(db_path=checker.DEFAULT_DB, *, before=None, now=None):
+def session_view(value):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.get("status") not in checker.SESSION_STATUSES:
+        raise checker.CheckError("invalid_session_state")
+    return {"id": checker.display_text(value.get("id"), "session_id"), "status": value["status"],
+            "started_at": timestamp(value.get("started_at")), "updated_at": timestamp(value.get("updated_at")),
+            "reason": checker.display_text(value.get("reason"), "session_reason", 500), "execution": "unverified"}
+
+
+def read_dashboard(db_path=checker.DEFAULT_DB, *, before=None, strategy_before=None, now=None):
     """Take one bounded, consistent read; release SQLite before rendering or HTTP IO."""
-    if before is not None and (type(before) is not int or not 0 < before <= 9223372036854775807):
-        raise checker.CheckError("invalid_cursor")
+    for cursor in (before, strategy_before):
+        if cursor is not None and (type(cursor) is not int or not 0 < cursor <= 9223372036854775807):
+            raise checker.CheckError("invalid_cursor")
+    if before is not None and strategy_before is not None:
+        raise checker.CheckError("conflicting_cursors")
     now = now or datetime.now(timezone.utc)
     response = empty_dashboard(now)
     path = Path(db_path).resolve()
@@ -255,6 +325,11 @@ def read_dashboard(db_path=checker.DEFAULT_DB, *, before=None, now=None):
         count = connection.execute("SELECT count(*) FROM intents WHERE status IN ('prepared','unknown')").fetchone()[0]
         unresolved = connection.execute("SELECT id, payload, status, outcome FROM intents WHERE status IN ('prepared','unknown') ORDER BY id LIMIT ?", (PAGE_SIZE,)).fetchall()
         linked = connection.execute("SELECT id, payload, status, outcome FROM intents WHERE id IN (" + ",".join("?" for _ in ids) + ")", tuple(ids)).fetchall() if ids else []
+        try:
+            strategies = checker.context_page(connection, state, before=strategy_before, limit=STRATEGY_PAGE_SIZE)
+        except checker.CheckError:
+            strategies = None
+            warnings.add("Recorded strategies are unavailable; canonical account values are shown separately.")
         connection.commit()
     except sqlite3.Error:
         raise checker.CheckError("database_unavailable_or_corrupt") from None
@@ -303,8 +378,9 @@ def read_dashboard(db_path=checker.DEFAULT_DB, *, before=None, now=None):
                            and response["metrics"]["remaining_close_costs"] is not None
                            and Decimal(response["metrics"]["remaining_close_costs"]) == 0 and count == 0)
         response["stops"] = {"loss_latched_at": timestamp(state.get("loss_latched_at")),
-                             "target_latched_at": timestamp(state.get("target_latched_at")),
-                             "target_trigger_gain": decimal_text(state.get("target_trigger_gain")), "closure_verified": closure}
+                              "target_latched_at": timestamp(state.get("target_latched_at")),
+                              "target_trigger_gain": decimal_text(state.get("target_trigger_gain")), "closure_verified": closure}
+        response["session"] = session_view(state.get("session"))
         loop = state.get("loop")
         if isinstance(loop, dict):
             health = checker.loop_health(state, now)
@@ -314,7 +390,7 @@ def read_dashboard(db_path=checker.DEFAULT_DB, *, before=None, now=None):
                                 "timeframe": loop.get("timeframe") if loop.get("timeframe") in checker.PERIODS else None,
                                 "last_cycle_at": timestamp(loop.get("last_cycle_at")), "next_cycle_at": timestamp(loop.get("next_cycle_at")),
                                 "end_reason": loop.get("end_reason") if loop.get("end_reason") in ("loss_latch", "target_latch") else None,
-                                "wake_reason": loop.get("wake_reason") if loop.get("wake_reason") in ("candle", "bar_retry", "clock_refresh", "market_closed", "latch_check", "closure") else None,
+                                 "wake_reason": loop.get("wake_reason") if loop.get("wake_reason") in ("candle", "bar_retry", "clock_refresh", "market_closed", "latch_check", "closure", "monitor", "session_check") else None,
                                 "execution": "unverified"}
             for field in ("policy_id", "goal_id"):
                 value = loop.get(field)
@@ -346,6 +422,7 @@ def read_dashboard(db_path=checker.DEFAULT_DB, *, before=None, now=None):
                                        protective_orders_count=sum(item["kind"] == "protective" for item in orders) if all(item["kind"] for item in orders) else None)
         intents = {row[0]: intent_view(row, state, warnings) for row in linked + unresolved}
         response["unresolved_intents"] = {"count": count, "items": [intents[row[0]] for row in unresolved if intents.get(row[0])]}
+        response["strategies"] = strategies_view(strategies, state, warnings)
         if len(response["unresolved_intents"]["items"]) != count:
             warnings.add("Unresolved action details are limited or unavailable; the total count still includes them.")
         activity, points, failures = [], [], []
@@ -366,9 +443,9 @@ def read_dashboard(db_path=checker.DEFAULT_DB, *, before=None, now=None):
                 source_at = timestamp(display.get("as_of")) if display else journal["as_of"] if journal else timestamp(sample.get("as_of"))
                 activity.append({"id": event_id, "command": command, "at": timestamp(at), "snapshot_at": source_at,
                                  "decision": display.get("decision") if display and display.get("decision") in DECISIONS else None,
-                                 "reason_codes": string_list(display.get("reason_codes", [])) if display else [],
-                                 "closure_verified": bool(display and display.get("closure_verified") is True),
-                                 "journal": journal, "intent": intent})
+                                  "reason_codes": string_list(display.get("reason_codes", [])) if display else [],
+                                  "closure_verified": bool(display and display.get("closure_verified") is True),
+                                  "journal": journal, "intent": intent, "session": session_view(detail.get("session"))})
                 if display and display.get("metrics") is not None and source_at:
                     metrics = metric_values(display["metrics"])
                     points.append({"event_id": event_id, "snapshot_id": checker.text(display.get("snapshot_id"), "snapshot_id"),
@@ -438,15 +515,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if url.path == "/api/health" and not query:
                 self.send_json(200, self.server.identity)
             elif url.path == "/api/dashboard":
-                if set(query) - {"before"}:
+                if set(query) - {"before", "strategy_before"}:
                     raise ValueError
-                before = None
+                options = {}
                 if query:
-                    raw = query["before"][0]
+                    field = next(iter(query))
+                    raw = query[field][0]
                     if not re.fullmatch(r"[1-9][0-9]{0,18}", raw) or int(raw) > 9223372036854775807:
                         raise ValueError
-                    before = int(raw)
-                result = read_dashboard(self.server.db_path, before=before)
+                    options[field] = int(raw)
+                result = read_dashboard(self.server.db_path, **options)
                 if result["status"] == "unconfigured" and getattr(self.server, "had_checkpoint", False):
                     raise checker.CheckError("account_state_missing")
                 if result["status"] != "unconfigured":
@@ -477,7 +555,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def dashboard_identity(db_path):
     paths = [os.path.normcase(str(path.resolve())) for path in (ROOT, Path(db_path))]
     return {"service": "ace-dashboard", "api_version": 1, "read_only": True,
-            "instance_id": hashlib.sha256(checker.encode(paths).encode("utf-8")).hexdigest()}
+            "instance_id": hashlib.sha256(checker.encode(paths).encode("utf-8")).hexdigest(),
+            "reader_build": checker.READER_BUILD, "viewer_build": VIEWER_BUILD,
+            "readable_schemas": list(checker.READABLE_SCHEMA_VERSIONS)}
 
 
 class DashboardServer(ThreadingHTTPServer):
@@ -496,21 +576,31 @@ def create_server(db_path=checker.DEFAULT_DB, port=8765):
     return server
 
 
-def is_dashboard_running(db_path, port):
+def probe_dashboard(db_path, port):
+    """Classify reuse without opening state or changing the existing process."""
     connection = HTTPConnection("127.0.0.1", port, timeout=1)
     try:
         connection.request("GET", "/api/health", headers={"Accept": "application/json"})
         response = connection.getresponse()
         if response.status != 200 or response.getheader("Content-Type", "").split(";")[0].strip() != "application/json":
-            return False
+            return "unavailable"
         body = response.read(4097)
         if len(body) > 4096:
-            return False
+            return "unavailable"
         identity = checker.decode(body.decode("utf-8"), exact_numbers=False)
-        return (isinstance(identity, dict) and type(identity.get("api_version")) is int
-                and identity.get("read_only") is True and identity == dashboard_identity(db_path))
+        expected = dashboard_identity(db_path)
+        if (not isinstance(identity, dict) or type(identity.get("api_version")) is not int
+                or identity.get("read_only") is not True
+                or any(identity.get(field) != expected[field] for field in ("service", "api_version", "instance_id"))):
+            return "unavailable"
+        schemas = identity.get("readable_schemas")
+        if (type(identity.get("reader_build")) is int and type(identity.get("viewer_build")) is int
+                and isinstance(schemas, list) and all(type(version) is int for version in schemas)
+                and identity == expected):
+            return "compatible"
+        return "restart_required"
     except (OSError, HTTPException, ValueError, TypeError):
-        return False
+        return "unavailable"
     finally:
         connection.close()
 
@@ -526,9 +616,16 @@ def main(argv=None):
         server = create_server(args.db, args.port)
     except OSError as error:
         occupied = error.errno in (errno.EADDRINUSE, 10048) or getattr(error, "winerror", None) == 10048
-        if occupied and is_dashboard_running(args.db, args.port):
+        status = probe_dashboard(args.db, args.port) if occupied else "unavailable"
+        if status == "compatible":
             print("Ace dashboard already running: http://127.0.0.1:" + str(args.port), flush=True)
             return 0
+        if status == "restart_required":
+            print("Ace dashboard restart required: the matching viewer has incompatible or unverifiable loaded code. "
+                  "Use the owning client's tracked process controls to restart only this viewer with current code, "
+                  "the same workspace, checkpoint and port. Browser refresh will not reload Python. "
+                  "Leave the trading agent and checkpoint unchanged.", file=sys.stderr)
+            return 1
         print("Unable to start the local dashboard. Check the port and local permissions.", file=sys.stderr)
         return 1
     print("Ace dashboard: http://127.0.0.1:" + str(server.server_port), flush=True)
