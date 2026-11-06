@@ -99,24 +99,33 @@ ul, ol { padding: 0; margin: 0; }
 .overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: clamp(28px, 4vw, 58px); margin-top: 32px; }
 .section-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
 .section-index { color: var(--orange); font-family: var(--mono); font-size: .7rem; font-weight: 400; margin-right: 12px; }
-.target-overview { display: grid; grid-template-columns: minmax(210px, 310px) minmax(0, 1fr); align-items: center; gap: clamp(28px, 5vw, 74px); padding: 15px 0 9px; }
-.target-progress { position: relative; width: min(100%, 310px); aspect-ratio: 1; place-self: center; }
-.target-progress svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.target-progress-track, .target-progress-ring { fill: none; stroke-width: 14; vector-effect: non-scaling-stroke; }
-.target-progress-track { stroke: var(--line-soft); }
-.target-progress-ring { stroke: var(--line-soft); stroke-linecap: round; transition: stroke-dashoffset 900ms cubic-bezier(.22, .75, .2, 1), stroke 200ms ease; }
-.target-progress[data-tone="positive"] .target-progress-ring { stroke: var(--green); }
-/* Negative progress has no filled arc, so keep the loss visible on the track. */
-.target-progress[data-tone="danger"] .target-progress-track,
-.target-progress[data-tone="danger"] .target-progress-ring { stroke: var(--red); }
-.target-progress-copy { position: absolute; inset: 19%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 9px; }
-.target-progress-copy strong { font-size: clamp(1.35rem, 2.8vw, 2.35rem); line-height: 1.08; font-weight: 520; }
-.target-progress-copy .eyebrow { color: var(--text); }
-.target-summary { display: grid; gap: 25px; }
-.target-primary .eyebrow { display: block; margin-bottom: 9px; }
-.target-amount { color: var(--orange); font-size: clamp(2.25rem, 4vw, 4.2rem); line-height: 1.08; letter-spacing: -.06em; font-weight: 450; }
-.target-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-block: 1px solid var(--line); padding: 21px 0; gap: 20px; }
-.target-metrics > div + div { border-left: 1px solid var(--line); padding-left: 20px; }
+.target-overview { padding: 15px 0 9px; }
+.target-progress { display: grid; gap: 18px; padding: clamp(18px, 3vw, 30px); border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+.target-progress-labels { display: flex; justify-content: space-between; align-items: end; gap: 28px; }
+.progress-endpoint, .progress-current { display: grid; gap: 7px; }
+.progress-endpoint { max-width: 45%; }
+.progress-endpoint strong { font-size: clamp(1rem, 1.8vw, 1.4rem); font-weight: 500; line-height: 1.2; }
+.progress-endpoint--target { text-align: right; }
+.progress-current { position: relative; width: min(13rem, 100%); left: clamp(0px, calc(var(--gain-position) - 6.5rem), max(0px, calc(100% - 13rem))); text-align: center; margin-bottom: 18px; }
+.progress-current .eyebrow { color: var(--text); }
+.progress-current strong { font-size: clamp(1.25rem, 2.7vw, 1.8rem); line-height: 1.15; font-weight: 520; }
+.target-progress-scale { --zero-position: 50%; --gain-position: var(--zero-position); --fill-start: var(--zero-position); --fill-width: 0%; position: relative; padding-top: 10px; }
+.gain-track { position: relative; height: 16px; background: var(--line-soft); border-radius: 2px; }
+.gain-fill { position: absolute; left: var(--fill-start); width: var(--fill-width); height: 100%; background: var(--muted); }
+.gain-zero, .gain-marker { position: absolute; top: -6px; bottom: -6px; width: 2px; transform: translateX(-50%); }
+.gain-zero { left: var(--zero-position); background: var(--muted); width: 1px; }
+.gain-marker { left: var(--gain-position); background: var(--text); top: -12px; }
+.target-progress[data-tone="positive"] .gain-fill, .target-progress[data-tone="positive"] .gain-marker { background: var(--green); }
+.target-progress[data-tone="danger"] .gain-fill, .target-progress[data-tone="danger"] .gain-marker { background: var(--red); }
+.target-progress[data-animate="true"] .gain-fill { transition: left 600ms ease, width 600ms ease; }
+.target-progress[data-animate="true"] .gain-marker, .target-progress[data-animate="true"] .progress-current { transition: left 600ms ease; }
+.gain-axis { position: relative; height: 22px; margin-top: 8px; }
+.gain-axis-zero { position: absolute; left: var(--zero-position); transform: translateX(-50%); color: var(--muted); font-size: .72rem; }
+.gain-half { position: absolute; width: 1px; height: 5px; background: var(--line); }
+.gain-half--budget { left: calc(var(--zero-position) / 2); }
+.gain-half--target { left: calc((var(--zero-position) + 100%) / 2); }
+.target-progress[data-state="unavailable"] .gain-marker, .target-progress[data-state="unavailable"] .gain-zero, .target-progress[data-state="unavailable"] .gain-axis { visibility: hidden; }
+.target-metrics { display: grid; grid-template-columns: minmax(0, 1fr); border-top: 1px solid var(--line); padding-top: 18px; }
 .target-metrics dd { font-size: clamp(1.15rem, 1.8vw, 1.7rem); line-height: 1.3; margin-top: 8px; }
 .target-details { margin-top: 23px; }
 .target-definition { color: var(--muted); font-size: .82rem; max-width: 720px; margin-top: 6px; }
@@ -224,7 +233,6 @@ details[open] > summary .row-toggle::after { content: "-"; }
   .desk-mode { flex-basis: 180px; }
   .overview-grid { grid-template-columns: minmax(0, 1fr) 280px; gap: 26px; }
   .risk-section { padding-left: 22px; }
-  .target-overview { grid-template-columns: minmax(190px, 240px) minmax(0, 1fr); gap: 28px; }
 }
 @media (max-width: 920px) {
   .overview-grid { grid-template-columns: minmax(0, 1fr); gap: 32px; }
@@ -245,11 +253,7 @@ details[open] > summary .row-toggle::after { content: "-"; }
   .refresh-info > span { text-align: left; }
   .session-metrics { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .strategy-context { grid-template-columns: minmax(0, 1fr); }
-  .target-overview { grid-template-columns: minmax(0, 1fr); gap: 22px; }
-  .target-progress { width: min(72vw, 270px); }
-  .target-summary { gap: 20px; }
-  .target-primary { text-align: center; }
-  .target-amount { font-size: clamp(2.4rem, 9vw, 4.2rem); }
+  .target-progress { padding: 20px; }
   .target-metrics dd { font-size: 1.5rem; }
   .risk-metrics dd { font-size: 1rem; }
   .risk-metrics .risk-budget dd { font-size: 1.35rem; }
@@ -266,9 +270,8 @@ details[open] > summary .row-toggle::after { content: "-"; }
   .brand { gap: 9px; }
   .desk-mode { flex-basis: 135px; font-size: .62rem; }
   .desk-mode > span:last-child { font-size: .66rem; }
-  .target-metrics { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .target-metrics > div { padding: 13px 0; }
-  .target-metrics > div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--line-soft); }
+  .target-progress { padding: 18px 14px; }
+  .progress-endpoint strong { font-size: .9rem; }
   .target-metrics dd { font-size: 1.18rem; }
   .baseline-metrics { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .baseline-metrics dd { font-size: .76rem; }

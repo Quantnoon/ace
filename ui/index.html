@@ -75,23 +75,40 @@
         <section id="target" class="target-section" aria-labelledby="target-heading">
           <div class="section-heading"><h2 id="target-heading"><span class="section-index">01</span> Approved account target</h2><span class="tag">ACCOUNT-WIDE</span></div>
           <div class="target-overview">
-            <div id="target-progress" class="target-progress" role="progressbar" aria-label="Approved target progress" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Unavailable">
-              <svg viewBox="0 0 240 240" aria-hidden="true" focusable="false">
-                <circle class="target-progress-track" cx="120" cy="120" r="94" pathLength="100"></circle>
-                <circle id="target-progress-ring" class="target-progress-ring" cx="120" cy="120" r="94" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100" transform="rotate(-90 120 120)"></circle>
-              </svg>
-              <div class="target-progress-copy">
-                <span class="eyebrow">SAVED PROGRESS</span>
-                <strong id="progress-pct" class="numeric">Unavailable</strong>
+            <div id="target-progress" class="target-progress" role="group" aria-label="Approved budget-to-target gain progress">
+              <div class="target-progress-labels">
+                <div class="progress-endpoint progress-endpoint--budget">
+                  <span class="eyebrow">BUDGET</span>
+                  <strong id="approved-budget" class="numeric">Unavailable</strong>
+                </div>
+                <div class="progress-endpoint progress-endpoint--target">
+                  <span class="eyebrow">TARGET</span>
+                  <strong id="approved-target" class="numeric">Unavailable</strong>
+                </div>
               </div>
-            </div>
-            <div class="target-summary">
-              <div class="target-primary"><span class="eyebrow">APPROVED TARGET</span><p id="approved-target" class="target-amount numeric">Unavailable</p></div>
+              <div id="gain-scale" class="target-progress-scale">
+                <div id="budget-progress" class="sr-only" role="progressbar" aria-label="Negative gain toward budget" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Unavailable"></div>
+                <div id="goal-progress" class="sr-only" role="progressbar" aria-label="Positive gain toward target" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Unavailable"></div>
+                <div class="progress-current">
+                  <span class="eyebrow">GAIN</span>
+                  <strong id="net-gain" class="numeric">Unavailable</strong>
+                </div>
+                <div class="gain-track" aria-hidden="true">
+                  <div class="gain-fill"></div>
+                  <span class="gain-zero"></span>
+                  <span class="gain-marker"></span>
+                </div>
+                <div class="gain-axis" aria-hidden="true">
+                  <span class="gain-half gain-half--budget"></span>
+                  <span class="gain-axis-zero numeric">0</span>
+                  <span class="gain-half gain-half--target"></span>
+                </div>
+              </div>
+              <p id="gain-scale-unavailable" class="section-note" hidden>Gain scale unavailable. Approved budget, target and saved net gain are required.</p>
               <dl class="target-metrics">
-                <div><dt>Estimated net gain</dt><dd id="net-gain" class="numeric">Unavailable</dd></div>
                 <div><dt>Remaining target</dt><dd id="remaining-target" class="numeric">Unavailable</dd></div>
               </dl>
-              <p class="section-note">Latest saved account observation. A full arc is not by itself a verified target latch, closure, or promised return.</p>
+              <p class="section-note">Saved net gain starts at zero: losses fill left, profits fill right. Budget is a scale reference; actual trailing drawdown is in Risk &amp; state. The bar does not establish a stop or verified closure.</p>
             </div>
           </div>
           <details class="disclosure target-details">
