@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7.1] - 2026-11-06
+
+### Changed
+
+- Replace the target donut with a signed monetary scale from the negative approved budget through fixed zero to the positive approved target. Section widths remain proportional to the approved amounts. One solid fill starts at zero and extends right in green for positive `estimated_goal_gain` or left in red for negative gain, never both; zero has no fill and the gain label/marker moves with gain.
+- Bound only fill/marker geometry to the signed endpoints, preserving exact money, signed percentages and overshoot text. Missing values remain unavailable, not zero.
+- Keep actual trailing drawdown, headroom and latches separately in **Risk & state**. The negative-budget endpoint is only a signed-gain visual reference, not real trailing-budget usage or a trigger; financial calculations, authority and session behavior are unchanged.
+- Advance `VIEWER_BUILD` from 3 to 4 so a matching build-3 viewer follows the existing nonzero, viewer-only restart-required path without stopping the service or changing the checkpoint. SQLite schema 5, reader build 1 and version-1 API/display/journal/action-context contracts are unchanged.
+
 ## [1.7.0] - 2026-11-05
 
 ### Added

@@ -263,7 +263,7 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(identity, dashboard.dashboard_identity(self.f.db))
             self.assertEqual(identity["readable_schemas"], [1, 2, 3, 4, 5])
             self.assertEqual(identity["reader_build"], checker.READER_BUILD)
-            self.assertEqual(identity["viewer_build"], dashboard.VIEWER_BUILD)
+            self.assertEqual(identity["viewer_build"], 4)
             self.assertEqual(headers["Cache-Control"], "no-store")
             self.assertNotIn(str(self.f.db), body.decode())
             self.assertNotIn(str(dashboard.ROOT), body.decode())
@@ -276,6 +276,30 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertIn("already running", output.getvalue())
             self.assertEqual(self.request(server, "/api/health")[0], 200)
+        self.assertFalse(self.f.db.exists())
+
+    def test_build_four_rejects_a_build_three_viewer_without_opening_state(self):
+        identity = dashboard.dashboard_identity(self.f.db)
+        self.assertEqual(identity["viewer_build"], 4)
+        response = Mock(status=200)
+        response.getheader.return_value = "application/json"
+        response.read.return_value = checker.encode(dict(identity, viewer_build=3)).encode()
+        connection = Mock()
+        connection.getresponse.return_value = response
+        with patch.object(dashboard, "HTTPConnection", return_value=connection), \
+                patch.object(dashboard, "create_server", side_effect=OSError(errno.EADDRINUSE, "in use")) as create, \
+                patch.object(sqlite3, "connect", side_effect=AssertionError("reuse must not open state")), \
+                patch("sys.stderr", new_callable=io.StringIO) as error, \
+                patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(dashboard.probe_dashboard(self.f.db, 8765), "restart_required")
+            self.assertEqual(dashboard.main(["--db", str(self.f.db)]), 1)
+        create.assert_called_once_with(self.f.db, 8765)
+        self.assertIn("restart required", error.getvalue())
+        self.assertIn("restart only this viewer", error.getvalue())
+        self.assertIn("Leave the trading agent and checkpoint unchanged", error.getvalue())
+        self.assertEqual(output.getvalue(), "")
+        connection.request.assert_called_with("GET", "/api/health", headers={"Accept": "application/json"})
+        connection.close.assert_called()
         self.assertFalse(self.f.db.exists())
 
     def test_health_is_frozen_without_rereading_deployed_files_or_account_state(self):

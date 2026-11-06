@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   isDecimal, decimalSign, formatDecimal, formatMoney, formatPercent, formatCount,
-  formatTimestamp, sourceFreshness, scopeKey, approvedAmounts, canonicalStatus, progressFill,
+  formatTimestamp, sourceFreshness, scopeKey, approvedAmounts, canonicalStatus, ratioFill, progressGeometry,
   intentStatus, contextForIntent, journalForScope, mergeActivity, isDashboardResponse, mergeDashboardPage,
   pollDelay, ACTIVITY_PREVIEW_SIZE, DashboardController,
 } from "../ui/dashboard.mjs";
@@ -226,16 +226,50 @@ test("journal metadata must bind to the current goal and remain explanation only
   assert.equal(journalForScope(data, { ...data.latest_journal, summary: malicious }).summary, malicious);
 });
 
-test("donut geometry bounds only the visual fill", () => {
-  assert.equal(progressFill(null), null);
-  assert.equal(progressFill("-110.50"), 0);
-  assert.equal(progressFill("-0.000000000001"), 0);
-  assert.equal(progressFill("0"), 0);
-  assert.equal(progressFill("16.000"), 16);
-  assert.equal(progressFill("100"), 100);
-  assert.equal(progressFill("124.000000000001"), 100);
-  assert.equal(progressFill("900719925474099300000000"), 100);
-  assert.ok(progressFill("99.99999999999999999999") < 100);
+test("signed gain starts at fixed zero and moves on a proportional budget-to-target scale", () => {
+  for (const [gain, budgetFill, targetFill, position] of [
+    ["-3", 100, 0, 0], ["-2", 100, 0, 0], ["-1", 50, 0, 25],
+    ["-0.000", 0, 0, 50], ["0", 0, 0, 50], ["1", 0, 50, 75], ["2", 0, 100, 100], ["3", 0, 100, 100],
+  ]) assert.deepEqual(progressGeometry("2", "2", gain), { split: 50, budgetFill, targetFill, position });
+  const profit = progressGeometry("5", "10", "2.06");
+  const loss = progressGeometry("5", "10", "-2.06");
+  assert.equal(profit.split, 33.333333333);
+  assert.equal(profit.budgetFill, 0);
+  assert.equal(profit.targetFill, 20.6);
+  assert.ok(Math.abs(profit.position - 47.0666666667) < 1e-8);
+  assert.equal(loss.split, profit.split);
+  assert.equal(loss.budgetFill, 41.2);
+  assert.equal(loss.targetFill, 0);
+  assert.ok(Math.abs(loss.position - 19.6) < 1e-8);
+});
+
+test("gain geometry handles large and tiny exact decimals without financial rounding", () => {
+  assert.equal(ratioFill("19.95", "250.00"), 7.98);
+  assert.equal(ratioFill("250.01", "250.00"), 100);
+  assert.ok(ratioFill("99.99999999999999999999", "100") < 100);
+  assert.equal(ratioFill("900719925474099300000000", "1801439850948198600000000"), 50);
+  const zeros = "0".repeat(600);
+  const large = progressGeometry(`1${zeros}`, `2${zeros}`, `1${zeros}`);
+  assert.equal(large.split, 33.333333333);
+  assert.equal(large.targetFill, 50);
+  assert.ok(Math.abs(large.position - 66.6666666667) < 1e-8);
+  const tiny = progressGeometry(`0.${zeros}2`, `0.${zeros}2`, `-0.${zeros}1`);
+  assert.deepEqual(tiny, { split: 50, budgetFill: 50, targetFill: 0, position: 25 });
+  assert.equal(progressGeometry("1", "1", "-0.000000000001").targetFill, 0);
+});
+
+test("unavailable or invalid scale inputs never become an invented zero or draft", () => {
+  for (const bad of [null, undefined, "", "NaN", "1e20", 5, "<b>5</b>"]) {
+    assert.equal(progressGeometry("5", "10", bad).position, null);
+    assert.equal(progressGeometry(bad, "10", "2").split, null);
+    assert.equal(ratioFill("1", bad), null);
+  }
+  for (const invalidLimit of ["0", "-0.0", "-5"]) {
+    assert.equal(progressGeometry(invalidLimit, "10", "2").position, null);
+    assert.equal(progressGeometry("5", invalidLimit, "-2").position, null);
+  }
+  assert.equal(ratioFill("-1", "250"), null);
+  assert.deepEqual(progressGeometry("5", "10", null), { split: 33.333333333, budgetFill: null, targetFill: null, position: null });
   assert.equal(ACTIVITY_PREVIEW_SIZE, 5);
 });
 
@@ -334,6 +368,15 @@ class FakeNode {
     this.parentNode = null;
     this.attributes = new Map();
     this.attributeWrites = new Map();
+    this.styleValues = new Map();
+    this.styleWrites = new Map();
+    this.style = {
+      setProperty: (key, value) => {
+        this.styleValues.set(key, value);
+        this.styleWrites.set(key, (this.styleWrites.get(key) ?? 0) + 1);
+      },
+      getPropertyValue: (key) => this.styleValues.get(key) ?? "",
+    };
     this.dataset = {};
     this.listeners = new Map();
     this._text = "";
@@ -420,8 +463,13 @@ test("markup and code use local assets, safe text APIs and accessible alternativ
   assert.match(html, /src="\/assets\/logo\.png"/);
   assert.match(html, /href="\/dashboard\.css"/);
   assert.match(html, /type="module" src="\/dashboard\.mjs"/);
-  assert.match(html, /id="target-progress"[^>]+role="progressbar"/);
-  assert.match(html, /id="target-progress-ring"/);
+  assert.match(html, /id="target-progress"[^>]+role="group"/);
+  assert.match(html, /id="budget-progress"[^>]+role="progressbar"/);
+  assert.match(html, /id="goal-progress"[^>]+role="progressbar"/);
+  assert.equal([...html.matchAll(/class="gain-fill"/g)].length, 1);
+  assert.match(html, /class="gain-marker"/);
+  assert.match(html, /class="gain-axis-zero numeric">0</);
+  assert.match(html, /id="gain-scale"[\s\S]*?class="progress-current"[\s\S]*?id="net-gain"/);
   assert.match(html, /id="progress-exact"/);
   assert.match(html, /<details class="disclosure target-details">[\s\S]*?<\/details>\s*<p id="active-draft-note"[^>]*>[^<]*<\/p>\s*<section class="decision-section"/);
   assert.ok(html.indexOf('id="decision-heading"') < html.indexOf('id="risk-heading"'));
@@ -430,11 +478,13 @@ test("markup and code use local assets, safe text APIs and accessible alternativ
   assert.match(html, /id="strategies-more"[^>]+aria-controls="strategies-list"/);
   assert.match(html, /<h2 id="intents-heading">Unresolved requests<\/h2>/);
   assert.ok(html.indexOf('id="intents-heading"') > html.indexOf('id="activity-heading"'));
-  assert.doesNotMatch(html, /id="orders"|id="order-filter"|id="orders-list"|>Orders<|observation-table|progress-chart/);
-  assert.match(css, /stroke-dashoffset 900ms/);
-  assert.match(css, /\.target-progress-ring\s*\{[^}]*stroke:\s*var\(--line-soft\)/);
-  assert.match(css, /\.target-progress\[data-tone="positive"\] \.target-progress-ring\s*\{[^}]*stroke:\s*var\(--green\)/);
-  assert.match(css, /\.target-progress\[data-tone="danger"\] \.target-progress-track,\s*\.target-progress\[data-tone="danger"\] \.target-progress-ring\s*\{[^}]*stroke:\s*var\(--red\)/);
+  assert.doesNotMatch(html, /id="orders"|id="order-filter"|id="orders-list"|>Orders<|observation-table|progress-chart|target-progress-ring|progress-pct|<circle|stroke-dash|pathLength|style=/);
+  assert.match(css, /\.gain-fill\s*\{[^}]*left: var\(--fill-start\); width: var\(--fill-width\)/);
+  assert.match(css, /data-tone="danger"[^}]+background: var\(--red\)/);
+  assert.match(css, /data-tone="positive"[^}]+background: var\(--green\)/);
+  assert.match(css, /\.progress-current\s*\{[^}]*left: clamp\(/);
+  assert.match(css, /data-animate="true"[^}]+transition: left 600ms/);
+  assert.doesNotMatch(css, /stroke-dash|repeating-linear-gradient/);
   assert.match(css, /@media \(max-width: 920px\)[\s\S]*?\.overview-grid \{ grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /\.strategy-context \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.strategy-context \{ grid-template-columns: minmax\(0, 1fr\)/);
@@ -473,62 +523,128 @@ test("configured rendering keeps malicious strings as inert text and canonical v
   assert.match(doc.getElementById("journal-details").textContent, /javascript:alert\(1\)/);
   assert.equal(doc.getElementById("account-login").textContent, "000042");
   assert.equal(doc.getElementById("approved-target").textContent, "500.000 USD cents");
+  assert.equal(doc.getElementById("approved-budget").textContent, "-250.00 USD cents");
   assert.equal(doc.getElementById("net-gain").textContent, "-0.000000000001 USD cents");
   assert.equal(doc.getElementById("net-gain").dataset.tone, "danger");
-  assert.equal(doc.getElementById("progress-pct").textContent, "<0.0001% loss");
-  assert.equal(doc.getElementById("target-progress").getAttribute("aria-valuenow"), "0");
-  assert.match(doc.getElementById("target-progress").getAttribute("aria-valuetext"), /-0\.0000000000002%/);
-  assert.equal(doc.getElementById("target-progress-ring").getAttribute("stroke-dashoffset"), "100");
+  assert.equal(doc.getElementById("progress-exact").textContent, "-0.0000000000002%");
+  assert.equal(doc.getElementById("budget-progress").getAttribute("aria-valuenow"), "0");
+  assert.match(doc.getElementById("budget-progress").getAttribute("aria-valuetext"), /-0\.000000000001 USD cents toward budget 250\.00 USD cents/);
+  assert.equal(doc.getElementById("goal-progress").getAttribute("aria-valuenow"), "0");
+  assert.match(doc.getElementById("goal-progress").getAttribute("aria-valuetext"), /no positive gain/);
+  assert.equal(doc.getElementById("gain-scale").style.getPropertyValue("--fill-width"), "0%");
+  assert.equal(doc.getElementById("target-progress").dataset.tone, "danger");
   assert.equal(doc.getElementById("pending-count").textContent, "1");
   assert.equal(doc.getElementById("canonical-state").textContent, "Within budget at last check");
   assert.match(doc.getElementById("loop-status").textContent, /recorded only/);
   assert.match(doc.getElementById("intents-list").textContent, /request-001/);
 });
 
-test("target donut animates only changed saved progress and keeps exact semantics", async (context) => {
+test("gain label moves from zero with one fill and never substitutes trailing drawdown", async (context) => {
   const payload = fixture();
   const { doc, controller } = setup(context, async () => response(payload));
   await controller.request();
   const progress = doc.getElementById("target-progress");
-  const ring = doc.getElementById("target-progress-ring");
-  assert.equal(doc.getElementById("progress-pct").textContent, "+16.000%");
+  const scale = doc.getElementById("gain-scale");
+  const geometry = (key) => Number.parseFloat(scale.style.getPropertyValue(key));
+  const budget = doc.getElementById("budget-progress");
+  const goal = doc.getElementById("goal-progress");
+  assert.equal(doc.getElementById("net-gain").textContent, "+80.00 USD cents");
+  assert.doesNotMatch(doc.getElementById("net-gain").textContent, /%/);
   assert.equal(doc.getElementById("progress-exact").textContent, "+16.000%");
-  assert.equal(progress.getAttribute("aria-valuenow"), "16");
-  assert.equal(progress.getAttribute("aria-valuetext"), "+16.000% toward the approved target");
+  assert.equal(budget.getAttribute("aria-valuenow"), "0");
+  assert.equal(goal.getAttribute("aria-valuenow"), "16");
+  assert.match(goal.getAttribute("aria-valuetext"), /\+80\.00 USD cents toward approved target 500\.000 USD cents/);
   assert.equal(progress.dataset.tone, "positive");
-  assert.equal(ring.getAttribute("stroke-dashoffset"), "84");
-  const writes = ring.attributeWrites.get("stroke-dashoffset");
+  assert.equal(geometry("--zero-position"), 33.333333333);
+  assert.equal(geometry("--fill-start"), geometry("--zero-position"));
+  assert.ok(Math.abs(geometry("--gain-position") - 44) < 1e-8);
+  assert.ok(Math.abs(geometry("--fill-width") - 10.6666666667) < 1e-8);
+  const writes = scale.styleWrites.get("--gain-position");
   payload.revision += 1;
+  payload.metrics.drawdown = "200";
   await controller.request();
-  assert.equal(ring.attributeWrites.get("stroke-dashoffset"), writes);
+  assert.equal(scale.styleWrites.get("--gain-position"), writes);
+  assert.equal(budget.getAttribute("aria-valuenow"), "0");
+  assert.equal(doc.getElementById("drawdown").textContent, "200 USD cents");
   payload.revision += 1;
-  payload.metrics.progress_pct = "124.000000000001";
+  payload.metrics.estimated_goal_gain = "100";
+  payload.metrics.progress_pct = "20";
   await controller.request();
-  assert.equal(doc.getElementById("progress-pct").textContent, "~+124.0000%");
-  assert.equal(doc.getElementById("progress-exact").textContent, "+124.000000000001%");
-  assert.equal(progress.getAttribute("aria-valuenow"), "100");
-  assert.match(progress.getAttribute("aria-valuetext"), /\+124\.000000000001%/);
-  assert.equal(progress.dataset.tone, "positive");
-  assert.equal(ring.getAttribute("stroke-dashoffset"), "0");
-  assert.equal(doc.getElementById("canonical-state").textContent, "Within budget at last check");
-  for (const [value, tone] of [["-16.000", "danger"], ["-0.0000000000001", "danger"], ["0", "neutral"], ["-0.000", "neutral"]]) {
+  assert.equal(progress.dataset.animate, "true");
+  assert.ok(geometry("--gain-position") > 44);
+
+  for (const [gain, percentage, leftFill, rightFill, tone] of [
+    ["620.000000000005", "124.000000000001", "0", "100", "positive"],
+    ["-125", "-25", "50", "0", "danger"],
+    ["-250", "-50", "100", "0", "danger"],
+    ["-300.000000000001", "-60.0000000000002", "100", "0", "danger"],
+    ["0", "0", "0", "0", "neutral"],
+    ["-0.000", "-0.000", "0", "0", "neutral"],
+  ]) {
     payload.revision += 1;
-    payload.metrics.progress_pct = value;
+    const previousTone = progress.dataset.tone;
+    payload.metrics.estimated_goal_gain = gain;
+    payload.metrics.progress_pct = percentage;
     await controller.request();
     assert.equal(progress.dataset.tone, tone);
-    assert.equal(progress.getAttribute("aria-valuenow"), "0");
-    assert.equal(ring.getAttribute("stroke-dashoffset"), "100");
-    assert.equal(doc.getElementById("progress-exact").textContent, `${value}%`);
+    assert.equal(budget.getAttribute("aria-valuenow"), leftFill);
+    assert.equal(goal.getAttribute("aria-valuenow"), rightFill);
+    assert.equal(doc.getElementById("net-gain").textContent, formatMoney(gain, "USD cents", { signed: true }));
+    assert.equal(doc.getElementById("progress-exact").textContent, formatPercent(percentage));
+    assert.equal(doc.getElementById("canonical-state").textContent, "Within budget at last check");
+    assert.ok(geometry("--gain-position") >= 0 && geometry("--gain-position") <= 100);
+    if (tone !== previousTone) assert.equal(progress.dataset.animate, "false");
+    if (leftFill !== "0") {
+      assert.equal(geometry("--fill-start"), geometry("--gain-position"));
+      assert.ok(Math.abs(geometry("--fill-start") + geometry("--fill-width") - geometry("--zero-position")) < 1e-8);
+    } else assert.equal(geometry("--fill-start"), geometry("--zero-position"));
   }
+});
+
+test("unknown gain or scale clears fill and recovers without replacing approved amounts with drafts", async (context) => {
+  const payload = fixture();
+  const { doc, controller } = setup(context, async () => response(payload));
+  await controller.request();
+  const scale = doc.getElementById("gain-scale");
+  const progress = doc.getElementById("target-progress");
   payload.revision += 1;
+  payload.metrics.estimated_goal_gain = null;
   payload.metrics.progress_pct = null;
   await controller.request();
-  assert.equal(doc.getElementById("progress-pct").textContent, "Unavailable");
+  assert.equal(doc.getElementById("net-gain").textContent, "Unavailable");
   assert.equal(doc.getElementById("progress-exact").textContent, "Unavailable");
-  assert.equal(progress.getAttribute("aria-valuenow"), null);
-  assert.equal(progress.getAttribute("aria-valuetext"), "Target progress unavailable");
+  assert.equal(doc.getElementById("goal-progress").getAttribute("aria-valuenow"), null);
+  assert.equal(doc.getElementById("budget-progress").getAttribute("aria-valuenow"), null);
+  assert.equal(doc.getElementById("goal-progress").getAttribute("aria-valuetext"), "Target progress unavailable");
+  assert.equal(progress.dataset.state, "unavailable");
   assert.equal(progress.dataset.tone, "muted");
-  assert.equal(ring.getAttribute("stroke-dashoffset"), "100");
+  assert.equal(scale.style.getPropertyValue("--fill-width"), "0%");
+  assert.equal(doc.getElementById("gain-scale-unavailable").hidden, false);
+
+  payload.revision += 1;
+  payload.metrics.estimated_goal_gain = "80";
+  payload.metrics.progress_pct = "16";
+  payload.policy.budget = null;
+  await controller.request();
+  assert.equal(progress.dataset.state, "ready");
+  assert.equal(doc.getElementById("approved-budget").textContent, "-250.00 USD cents");
+  payload.revision += 1;
+  payload.metrics.budget = null;
+  await controller.request();
+  assert.equal(progress.dataset.state, "unavailable");
+  assert.equal(doc.getElementById("approved-budget").textContent, "Unavailable");
+  assert.equal(scale.style.getPropertyValue("--fill-width"), "0%");
+  payload.revision += 1;
+  payload.policy.budget = "100";
+  payload.scope.policy_id = "new-policy";
+  payload.goal.target = "100";
+  payload.scope.goal_id = "new-goal";
+  await controller.request();
+  assert.equal(progress.dataset.state, "ready");
+  assert.equal(progress.dataset.animate, "false");
+  assert.equal(scale.style.getPropertyValue("--zero-position"), "50%");
+  assert.equal(scale.style.getPropertyValue("--gain-position"), "90%");
+  assert.equal(doc.getElementById("goal-progress").getAttribute("aria-valuenow"), "80");
 });
 
 test("activity shows five rows then fetches every older page sequentially", async (context) => {
@@ -1038,14 +1154,14 @@ test("unchanged polls preserve expanded and focused activity rows", async (conte
   row.summary.focus();
   const replacements = row.summary.replacements;
   const intentReplacements = intent.summary.replacements;
-  const ringWrites = doc.getElementById("target-progress-ring").attributeWrites.get("stroke-dashoffset");
+  const gainWrites = doc.getElementById("gain-scale").styleWrites.get("--gain-position");
   payload = { ...structuredClone(payload), revision: 13, generated_at: "2026-11-04T12:00:25Z" };
   await controller.request();
   assert.equal(row.details.open, true);
   assert.equal(doc.activeElement, row.summary);
   assert.equal(row.summary.replacements, replacements);
   assert.equal(intent.summary.replacements, intentReplacements);
-  assert.equal(doc.getElementById("target-progress-ring").attributeWrites.get("stroke-dashoffset"), ringWrites);
+  assert.equal(doc.getElementById("gain-scale").styleWrites.get("--gain-position"), gainWrites);
   payload.activity.items[0].decision = "blocked";
   await controller.request();
   assert.equal(row.details.open, true);
@@ -1060,6 +1176,8 @@ test("reader failure retains conspicuously last-known values and original timest
   const { doc, controller } = setup(context, async () => response(payload, ok), () => now);
   await controller.request();
   const oldRead = controller.successfulAt;
+  const gainPosition = doc.getElementById("gain-scale").style.getPropertyValue("--gain-position");
+  const gainWrites = doc.getElementById("gain-scale").styleWrites.get("--gain-position");
   payload = { ok: false, status: "unavailable", error: "reader_busy", generated_at: GENERATED };
   ok = false;
   now += 60000;
@@ -1071,6 +1189,8 @@ test("reader failure retains conspicuously last-known values and original timest
   assert.match(doc.getElementById("reader-error").textContent, /last-known saved data/);
   assert.match(doc.getElementById("source-badge").textContent, /Last-known \/ Stale observation/);
   assert.equal(doc.getElementById("net-gain").textContent, "+80.00 USD cents");
+  assert.equal(doc.getElementById("gain-scale").style.getPropertyValue("--gain-position"), gainPosition);
+  assert.equal(doc.getElementById("gain-scale").styleWrites.get("--gain-position"), gainWrites);
   payload = { ...fixture(), status: "unconfigured", revision: 0, account: null, scope: null, snapshot: null, metrics: null };
     ok = true;
     await controller.request();
@@ -1159,8 +1279,9 @@ test("unknown order counts, progress and intents remain unavailable", async (con
   await controller.request();
   assert.equal(doc.getElementById("pending-count").textContent, "Unavailable");
   assert.equal(doc.getElementById("approved-target").textContent, "Unavailable");
-  assert.equal(doc.getElementById("progress-pct").textContent, "Unavailable");
-  assert.equal(doc.getElementById("target-progress").getAttribute("aria-valuenow"), null);
+  assert.equal(doc.getElementById("progress-exact").textContent, "Unavailable");
+  assert.equal(doc.getElementById("goal-progress").getAttribute("aria-valuenow"), null);
+  assert.equal(doc.getElementById("gain-scale").style.getPropertyValue("--fill-width"), "0%");
   assert.match(doc.getElementById("intents-empty").textContent, /not an empty list/);
 });
 

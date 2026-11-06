@@ -78,15 +78,52 @@ export function formatPercent(value, { compact = false } = {}) {
   return amount === UNAVAILABLE ? amount : `${amount}%`;
 }
 
-export function progressFill(value) {
+function decimalUnits(value) {
   if (!isDecimal(value)) return null;
-  if (decimalSign(value) !== 1) return 0;
-  const unsigned = value[0] === "+" ? value.slice(1) : value;
-  const integer = unsigned.split(".")[0].replace(/^0+(?=\d)/, "");
-  if (integer.length > 3 || integer.length === 3 && integer >= "100") return 100;
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) return 100;
-  return amount >= 100 ? 100 - Number.EPSILON * 100 : amount;
+  const sign = decimalSign(value);
+  const unsigned = value[0] === "+" || value[0] === "-" ? value.slice(1) : value;
+  const [integer, fraction = ""] = unsigned.split(".");
+  return { sign, units: BigInt((integer + fraction).replace(/^0+(?=\d)/, "")), scale: fraction.length };
+}
+
+function alignedUnits(left, right) {
+  const scale = Math.max(left.scale, right.scale);
+  return [
+    left.units * 10n ** BigInt(scale - left.scale),
+    right.units * 10n ** BigInt(scale - right.scale),
+  ];
+}
+
+function boundedPercent(numerator, denominator) {
+  if (numerator >= denominator) return 100;
+  // Reduce exact decimal integers before converting geometry (never displayed money).
+  const precision = 1_000_000_000n;
+  return Number(numerator * 100n * precision / denominator) / Number(precision);
+}
+
+export function ratioFill(value, limit) {
+  const numerator = decimalUnits(value);
+  const denominator = decimalUnits(limit);
+  if (!numerator || !denominator || numerator.sign === -1 || denominator.sign !== 1) return null;
+  if (numerator.sign === 0) return 0;
+  const [scaledNumerator, scaledDenominator] = alignedUnits(numerator, denominator);
+  return boundedPercent(scaledNumerator, scaledDenominator);
+}
+
+export function progressGeometry(budget, target, gain) {
+  const budgetAmount = decimalUnits(budget);
+  const targetAmount = decimalUnits(target);
+  let split = null;
+  if (budgetAmount?.sign === 1 && targetAmount?.sign === 1) {
+    const [scaledBudget, scaledTarget] = alignedUnits(budgetAmount, targetAmount);
+    split = boundedPercent(scaledBudget, scaledBudget + scaledTarget);
+  }
+  const sign = decimalSign(gain);
+  const budgetFill = sign === null ? null : ratioFill(sign === -1 ? gain.slice(1) : "0", budget);
+  const targetFill = sign === null ? null : ratioFill(sign === 1 ? gain : "0", target);
+  const position = split === null || budgetFill === null || targetFill === null ? null
+    : sign === -1 ? split * (1 - budgetFill / 100) : split + (100 - split) * targetFill / 100;
+  return { split, budgetFill, targetFill, position };
 }
 
 export function formatCount(value) {
@@ -508,9 +545,10 @@ class DashboardView {
     const data = state.data;
     const metrics = record(data.metrics) ? data.metrics : {};
     const approved = approvedAmounts(data);
+    this.money("approved-budget", decimalSign(approved.budget) === 1 ? `-${approved.budget.replace(/^\+/, "")}` : null);
     this.money("approved-target", approved.target);
     this.money("net-gain", metrics.estimated_goal_gain, { signed: true, tonal: true });
-    this.renderTargetProgress(metrics.progress_pct);
+    this.renderBudgetTargetProgress(approved, metrics);
     this.money("remaining-target", metrics.remaining_target);
     this.money("baseline-equity", data.goal?.start_equity);
     this.money("close-costs", metrics.remaining_close_costs);
@@ -587,24 +625,53 @@ class DashboardView {
     this.renderIntents(data.unresolved_intents);
   }
 
-  renderTargetProgress(value) {
-    const fill = progressFill(value);
-    const compact = formatPercent(value, { compact: true });
-    const exact = formatPercent(value);
-    const tone = decimalSign(value) === -1 ? "danger" : decimalSign(value) === 1 ? "positive" : "neutral";
-    this.text("progress-pct", compact);
+  renderBudgetTargetProgress(approved, metrics) {
+    const geometry = progressGeometry(approved.budget, approved.target, metrics.estimated_goal_gain);
+    const exact = formatPercent(metrics.progress_pct);
+    const tone = decimalSign(metrics.progress_pct) === -1 ? "danger" : decimalSign(metrics.progress_pct) === 1 ? "positive" : "neutral";
     this.text("progress-exact", exact);
-    this.node("progress-pct").title = isDecimal(value) ? `${value}% (exact)` : UNAVAILABLE;
-    this.node("progress-pct").dataset.tone = tone;
     this.node("progress-exact").dataset.tone = tone;
+    const gain = formatMoney(metrics.estimated_goal_gain, this.currency, { signed: true });
+    const gainSign = decimalSign(metrics.estimated_goal_gain);
+
+    const budget = this.node("budget-progress");
+    budget.dataset.tone = geometry.budgetFill === null ? "muted" : geometry.budgetFill > 0 ? "danger" : "neutral";
+    budget.setAttribute("aria-valuetext", geometry.budgetFill === null
+      ? "Gain toward budget unavailable"
+      : gainSign === -1
+        ? `Current net gain ${gain} toward budget ${formatMoney(approved.budget, this.currency)}`
+        : `Current net gain ${gain}; no negative gain toward budget ${formatMoney(approved.budget, this.currency)}`);
+    if (geometry.budgetFill === null) budget.removeAttribute("aria-valuenow");
+    else budget.setAttribute("aria-valuenow", String(geometry.budgetFill));
+
+    const goal = this.node("goal-progress");
+    goal.dataset.tone = geometry.targetFill === null ? "muted" : geometry.targetFill > 0 ? "positive" : "neutral";
+    goal.setAttribute("aria-valuetext", geometry.targetFill === null
+      ? "Target progress unavailable"
+      : gainSign === 1
+        ? `Current net gain ${gain} toward approved target ${formatMoney(approved.target, this.currency)}`
+        : `Current net gain ${gain}; no positive gain toward approved target ${formatMoney(approved.target, this.currency)}`);
+    if (geometry.targetFill === null) goal.removeAttribute("aria-valuenow");
+    else goal.setAttribute("aria-valuenow", String(geometry.targetFill));
+
     const progress = this.node("target-progress");
-    progress.dataset.tone = fill === null ? "muted" : tone;
-    progress.setAttribute("aria-valuetext", fill === null ? "Target progress unavailable" : `${exact} toward the approved target`);
-    if (fill === null) progress.removeAttribute("aria-valuenow");
-    else progress.setAttribute("aria-valuenow", String(fill));
-    const signature = JSON.stringify([value, fill]);
+    const available = geometry.position !== null;
+    progress.dataset.state = available ? "ready" : "unavailable";
+    this.show("gain-scale-unavailable", !available);
+    const signature = JSON.stringify([approved.budget, approved.target, metrics.estimated_goal_gain, geometry]);
     if (signature !== this.progressSignature) {
-      this.node("target-progress-ring").setAttribute("stroke-dashoffset", String(100 - (fill ?? 0)));
+      const gainTone = !available ? "muted" : gainSign === -1 ? "danger" : gainSign === 1 ? "positive" : "neutral";
+      // A sign change jumps through zero rather than briefly coloring both sides.
+      progress.dataset.animate = String(this.progressSignature !== null && progress.dataset.tone === gainTone && available);
+      progress.dataset.tone = gainTone;
+      const split = geometry.split ?? 50;
+      const position = geometry.position ?? split;
+      const style = this.node("gain-scale").style;
+      // CSSOM property writes are CSP-safe; only validated, bounded geometry enters CSS.
+      style.setProperty("--zero-position", `${split}%`);
+      style.setProperty("--gain-position", `${position}%`);
+      style.setProperty("--fill-start", `${Math.min(split, position)}%`);
+      style.setProperty("--fill-width", `${Math.abs(position - split)}%`);
       this.progressSignature = signature;
     }
   }
