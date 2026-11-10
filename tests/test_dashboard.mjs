@@ -457,6 +457,8 @@ test("markup and code use local assets, safe text APIs and accessible alternativ
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(ids).size, ids.length);
   for (const match of source.matchAll(/\b(?:text|node|show|time|money)\("([^"]+)"/g)) assert.ok(ids.includes(match[1]), `Missing static element ${match[1]}`);
+  assert.doesNotMatch(html, /session-strip|session-metrics|id="session-(?:status|phase|reason|next-wake|wake-reason)"/);
+  assert.doesNotMatch(css, /\.session-strip|\.session-metrics/);
   assert.doesNotMatch(source, /innerHTML|outerHTML|insertAdjacentHTML|\beval\s*\(|new Function|localStorage|sessionStorage|indexedDB|document\.cookie|serviceWorker|WebSocket|EventSource/);
   assert.doesNotMatch(html, /https?:\/\/|\son[a-z]+\s*=/i);
   assert.doesNotMatch(css, /@import|https?:\/\//i);
@@ -944,30 +946,35 @@ test("active, closing and closed financial loops never verify current execution"
   assert.equal(doc.getElementById("loop-end").textContent, "target latch");
 });
 
-test("session control is distinct from financial settlement and never proves execution", async (context) => {
+test("removing the session panel leaves configured account, risk and loop sections rendering", async (context) => {
   const payload = fixture();
   payload.session = { id: "session-1", status: "active", started_at: OBSERVED, updated_at: GENERATED,
     reason: "User requested trading until stopped.", execution: "running" };
   const { doc, controller } = setup(context, async () => response(payload));
   await controller.request();
-  assert.equal(doc.getElementById("session-status").textContent, "Continue requested");
-  assert.equal(doc.getElementById("session-phase").textContent, "Trading / management");
-  assert.equal(doc.getElementById("loop-execution").textContent, "Unverified");
+  assert.equal(controller.error, null);
+  assert.equal(doc.nodes.has("session-status"), false);
+  assert.equal(doc.nodes.has("session-phase"), false);
+  assert.equal(doc.getElementById("session-id").textContent, payload.session.id);
   assert.equal(doc.getElementById("session-started").dateTime, OBSERVED);
   assert.equal(doc.getElementById("session-updated").dateTime, GENERATED);
-  assert.equal(doc.getElementById("session-next-wake").dateTime, payload.loop.next_wake_at);
+  assert.equal(doc.getElementById("account-login").textContent, payload.account.login);
+  assert.equal(doc.getElementById("approved-budget").textContent, "-250.00 USD cents");
+  assert.equal(doc.getElementById("approved-target").textContent, "500.000 USD cents");
+  assert.equal(doc.getElementById("remaining-risk").textContent, "+230.05 USD cents");
+  assert.equal(doc.getElementById("loop-status").textContent, "active (recorded only)");
+  assert.equal(doc.getElementById("loop-execution").textContent, "Unverified");
+  assert.equal(doc.getElementById("loop-wake").dateTime, payload.loop.next_wake_at);
+  assert.match(doc.getElementById("intents-list").textContent, /request-001/);
   payload.stops.target_latched_at = OBSERVED;
   payload.loop.status = "closing";
   payload.loop.wake_reason = "closure";
   await controller.request();
-  assert.equal(doc.getElementById("session-phase").textContent, "Closure / reconciliation");
+  assert.equal(doc.getElementById("loop-wake-reason").textContent, "Closure / reconciliation");
   payload.stops.closure_verified = true;
   payload.loop.status = "closed";
   payload.loop.wake_reason = "monitor";
   await controller.request();
-  assert.equal(doc.getElementById("session-status").textContent, "Continue requested");
-  assert.equal(doc.getElementById("session-phase").textContent, "Stopped monitoring / no new risk");
-  assert.equal(doc.getElementById("session-wake-reason").textContent, "Stopped-account observation");
   assert.equal(doc.getElementById("loop-wake-reason").textContent, "Stopped-account observation");
   assert.equal(doc.getElementById("canonical-state").textContent, "Target stop latched");
   assert.match(doc.getElementById("status-announcement").textContent, /execution unverified/);
@@ -1041,7 +1048,7 @@ test("strategy pages reject stale cursors and discard scope or revision races", 
   assert.equal(gone.strategyCursor, null);
 });
 
-test("stop and interruption notes stay visible without freshening financial evidence", async (context) => {
+test("session changes do not freshen financial evidence or break remaining sections", async (context) => {
   let now = NOW;
   const payload = fixture();
   payload.session = { id: "session-1", status: "stopped", started_at: OBSERVED, updated_at: GENERATED,
@@ -1050,24 +1057,25 @@ test("stop and interruption notes stay visible without freshening financial evid
   payload.loop.wake_reason = null;
   const { doc, controller } = setup(context, async () => response(payload), () => now);
   await controller.request();
-  assert.equal(doc.getElementById("session-status").textContent, "User stop recorded");
-  assert.equal(doc.getElementById("session-phase").textContent, "Routine trading disabled");
-  assert.equal(doc.getElementById("session-reason").textContent, payload.session.reason);
-  assert.equal(doc.getElementById("session-next-wake").textContent, "Unavailable");
+  assert.equal(controller.error, null);
+  assert.equal(doc.nodes.has("session-status"), false);
+  assert.equal(doc.getElementById("session-id").textContent, payload.session.id);
   assert.equal(doc.getElementById("canonical-state").textContent, "Within budget at last check");
+  assert.equal(doc.getElementById("account-login").textContent, payload.account.login);
+  assert.equal(doc.getElementById("approved-target").textContent, "500.000 USD cents");
   assert.match(doc.getElementById("closure-state").textContent, /No verified account closure/);
   now += 600000;
   payload.session.status = "interrupted";
   payload.session.updated_at = new Date(now).toISOString();
   await controller.request();
-  assert.equal(doc.getElementById("session-status").textContent, "Interruption recorded");
+  assert.equal(controller.error, null);
   assert.equal(doc.getElementById("source-badge").textContent, "Stale observation");
   assert.equal(doc.getElementById("source-time").dateTime, OBSERVED);
   payload.session.status = "active";
   payload.loop.next_wake_at = GENERATED;
   payload.loop.wake_reason = "session_check";
   await controller.request();
-  assert.equal(doc.getElementById("session-wake-reason").textContent, "Fresh session observation");
+  assert.equal(doc.getElementById("loop-wake-reason").textContent, "Fresh session observation");
   assert.equal(doc.getElementById("loop-execution").textContent, "Unverified");
 });
 
@@ -1081,12 +1089,13 @@ test("session activity is explanation-only and missing session data remains unav
   assert.match(doc.getElementById("activity-list").textContent, /User stop recorded/);
   assert.match(doc.getElementById("activity-list").textContent, /broker exposure is unchanged/);
   assert.match(doc.getElementById("activity-list").textContent, /No broker observation, closure or current client execution/);
-  assert.equal(doc.getElementById("session-status").textContent, "Not recorded");
-  assert.equal(doc.getElementById("session-phase").textContent, "Legacy / bounded workflow");
+  assert.equal(doc.nodes.has("session-status"), false);
+  assert.equal(doc.getElementById("session-id").textContent, "Unavailable");
   for (const session of [null, false, {}, { status: "running" }]) {
     payload.session = session;
     await controller.request();
-    assert.equal(doc.getElementById("session-status").textContent, "Not recorded");
+    assert.equal(controller.error, null);
+    assert.match(doc.getElementById("activity-list").textContent, /User stop recorded/);
     assert.equal(doc.getElementById("session-id").textContent, "Unavailable");
   }
 });

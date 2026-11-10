@@ -6,20 +6,20 @@
 
 Client-neutral instructions for an AI agent that analyses markets and trades a MetaTrader 5 (MT5) account through an MT5 Model Context Protocol (MCP) server, with a small Python/SQLite account checker and a separate read-only local dashboard. You supply a monetary trailing-loss budget and a profit target; the agent reads the market itself and decides which orders to place. The mandate covers the whole named account, including manual exposure.
 
-Version: **[1.7.1](VERSION)** | [Changelog](CHANGELOG.md)
+Version: **[1.7.2](VERSION)** | [Changelog](CHANGELOG.md)
 
-## v1.7.1 Highlights
+## v1.7.2 Highlights
 
-- **Signed monetary scale:** the [local dashboard](#local-dashboard) runs from the negative approved budget through fixed zero to the positive approved target, with section widths proportional to those approved amounts.
-- **One gain fill:** a solid fill starts at zero and extends right in green for positive `estimated_goal_gain` or left in red for negative gain, never both. The gain label/marker moves with gain; only geometry is bounded, not exact money, signed percentages or overshoot text. Unavailable is not zero.
-- **Risk kept separate:** actual trailing drawdown, headroom and latches remain in **Risk & state**. The negative-budget endpoint is only a signed-gain visual reference, not real trailing-budget usage or a trigger. Trading authority, financial calculations and session behavior are unchanged.
+- **Standalone FX strategies:** the new [FX Entry Strategies](instructions/strategies.md) file is the single source for the consolidation screen, four independent playbooks, separate signals and intents, 2R–5R planned targets, invalidation-based stops, trailing, and account-headroom checks.
+- **Dashboard cleanup:** remove the disabled session strip and its stale DOM updates while retaining session-event details in activity and loop telemetry elsewhere. Other account, target, risk, strategy, and activity sections remain available.
+- **Viewer compatibility:** advance `VIEWER_BUILD` from 4 to 5 so an older viewer is not silently reused after the UI cleanup. SQLite schema 5, reader build 1, and version-1 API/display/journal/action-context contracts remain unchanged.
 
 SQLite schema 5 reads versions 1/2/3/4/5; the dashboard API and journal/display envelopes remain version 1, and action context has its own version 1. The next authorized write upgrades using the same three tables, preserving limits, baselines, latches, user stops, intents and history. Reads never upgrade state, backfill missing plans or expand an old bounded mandate into indefinite authority. Historical reviewed-baseline receipts remain supported.
 
 ## Getting Started
 
 1. Open this project in your AI client. Load [AGENTS.md](AGENTS.md) if it is not discovered automatically.
-2. Have the client read all four instruction files below before every trading session.
+2. Have the client read all five instruction files below before every trading session.
 3. Make Python 3.10+ and standard-library SQLite available. The AI client is the runtime and must support actual waits/continuation, preferably its documented native persistent-task and scheduled-wake facilities. Ace verifies this before new exposure; no additional trading runner, database server or client-specific repository configuration is needed.
 4. Ensure your client's MT5 MCP is connected and execution-enabled. Ace reuses it rather than asking you to connect again. Keep credentials in the client's secure setup, outside this repository and chat. Real client/tool restrictions still apply.
 5. Provide the monetary budget and target for trading. That is the start instruction for the documented account-wide workflow; no extra final or per-action approval is requested. Ace starts/reuses the local dashboard and reports its verified URL. Only genuinely missing/ambiguous inputs or account targeting need a question. Explicit connection-only, analysis-only, dashboard-only and other bounded requests retain their narrower scope.
@@ -29,17 +29,18 @@ The whole flow: existing MT5 MCP -> your budget/target start request -> automati
 ## Instructions
 
 - [MT5 Connection](instructions/mt5-connection.md)
+- [FX Entry Strategies](instructions/strategies.md)
 - [Monetary Risk And SQLite/Helper Contract](instructions/risk-management.md)
 - [Goals And Progress](instructions/goals.md)
 - [Loop Sessions](instructions/loop.md)
 
 ## How Ace Trades
 
-There is no strategy catalogue and no backtesting. Ace works from live MT5 data each session:
+There is no executable strategy engine or backtesting. The AI client follows the single-source [FX Entry Strategies](instructions/strategies.md) instructions and works from live MT5 data each session:
 
 - **Universe.** It lists the broker's actual symbols and keeps the majors, major minors (such as EURJPY, GBPJPY and AUDJPY), spot metals, oil and other commodities, index CFDs, and the broker's synthetics, excluding anything whose contract size, tick value, conversion, stop distance, spread, commission, swap, margin or availability cannot be verified.
-- **Analysis.** It reads current quotes and bars across several timeframes: direction or range, momentum, volatility, spread quality, session and invalidation. Before dispatch, `prepare` saves the original strategy/rules and factual rationale in `action.context`, separate from exact MCP parameters. The root entry intent ID identifies the idea and its fixed original risk allocation.
-- **Execution.** It opens positions and pending orders across independent trade ideas instead of committing the budget to one trade, each with a broker-side protective stop, sized to the broker's lot step.
+- **FX entry analysis.** All FX-specific regime, playbook, signal, SL/TP and trailing instructions are in [FX Entry Strategies](instructions/strategies.md). Other eligible asset classes retain their normal analysis workflow; existing exposure remains subject to required management.
+- **Execution.** Follow [risk management](instructions/risk-management.md) for per-action context, prepare/dispatch/readback/resolve, and account-wide affordability.
 - **Management.** [Active Order Management](instructions/risk-management.md#active-order-management) defines adaptive cost-aware breakeven and trailing stops, early invalidation exits and cancellation of invalid pending entries for verified Ace-owned trades. Valid pending setups stay in place. New entries still need fresh signals; protect-first winner additions require earlier legs to be profitable and protected at verified breakeven or better, sharing the original idea's fixed risk allocation rather than counting as diversification. Floating-profit give-back remains risk even at breakeven.
 - **Budget.** The budget is one account-wide trailing allowance. It follows the highest cash-flow-adjusted equity actually observed, so several orders share the same remaining headroom; no order may use the whole budget, and no martingale, averaging into losses or stop widening is allowed.
 - **Target.** The target is account-wide gain from the approved baseline, adjusted for external cash flows and estimated incremental closing costs.
@@ -92,7 +93,7 @@ python scripts/dashboard.py
 
 Open `http://127.0.0.1:8765`. Python 3.10+ and its standard library are sufficient; there are no external Python packages, frontend dependencies or build steps. Optional CLI flags are `--port <port>` and `--db <path>`; the default database is repository-root `ace_state.sqlite3`. The browser cannot choose a database path. An alternate path is for a fixture or an explicitly managed checkpoint, not a second trading ledger.
 
-`/api/health` retains flat `service`, `api_version: 1`, `read_only: true` and `instance_id` fields, adding integer `reader_build`, integer `viewer_build` and an array of integers `readable_schemas`. These values are frozen at server construction; health never opens SQLite. `instance_id` remains the workspace/checkpoint-path hash, exposing neither raw paths nor account data. The checker keeps `SCHEMA_VERSION = 5`, shares `READABLE_SCHEMA_VERSIONS = (1, 2, 3, 4, 5)` with health and embeds integer `READER_BUILD = 1`; the viewer embeds integer `VIEWER_BUILD = 4`. Increment the corresponding build for reader/viewer behavior changes, including same-schema changes. On-disk `VERSION` or updated static assets are not evidence of loaded Python code. Health confirms identity/capability, not checkpoint readability/freshness or broker/AI execution.
+`/api/health` retains flat `service`, `api_version: 1`, `read_only: true` and `instance_id` fields, adding integer `reader_build`, integer `viewer_build` and an array of integers `readable_schemas`. These values are frozen at server construction; health never opens SQLite. `instance_id` remains the workspace/checkpoint-path hash, exposing neither raw paths nor account data. The checker keeps `SCHEMA_VERSION = 5`, shares `READABLE_SCHEMA_VERSIONS = (1, 2, 3, 4, 5)` with health and embeds integer `READER_BUILD = 1`; the viewer embeds integer `VIEWER_BUILD = 5`. Increment the corresponding build for reader/viewer behavior changes, including same-schema changes. On-disk `VERSION` or updated static assets are not evidence of loaded Python code. Health confirms identity/capability, not checkpoint readability/freshness or broker/AI execution.
 
 Repeated launches reuse a matching viewer only with exact loaded build/capability compatibility and strict field types; build/schema numbers cannot be booleans or strings. Matching incompatible, legacy or unverifiable metadata produces a nonzero, actionable viewer-only restart-required error. An unrelated/unavailable service on an occupied port gets a generic refusal. Neither refusal stops the service; do not bypass it with auto-kill, hot reload, another port/checkpoint or an HTTP shutdown endpoint. The viewer follows the client's process lifetime; this is not an OS startup task, a trading daemon or proof that the AI is executing between turns.
 

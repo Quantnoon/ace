@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.7.2] - 2026-11-10
+
+### Added
+
+- Add `instructions/strategies.md` as the single source for FX consolidation screening, four standalone playbooks and independent signals, strategy-specific initial SLs, planned 2R–5R TPs, trailing stops, and aggregate affordability. Link it from the agent workflow and instruction index, and require it in the five-file trading-session read.
+
+### Changed
+
+- Remove the disabled session strip and its obsolete DOM rendering from the dashboard while retaining session-event detail in Activity and existing loop telemetry. Remove unused session-strip styles, preserve the page-section navigation, and keep the rest of the account, target, risk, strategy, and activity data rendering.
+- Advance `VIEWER_BUILD` from 4 to 5 so the compatibility check requires restarting a previously loaded viewer after this UI behavior change. SQLite schema 5, reader build 1, and version-1 API/display/journal/action-context contracts are unchanged.
+- Remove the existing dashboard page-heading tagline/title copy and ignore the local `.opencode` directory in Git.
+- Update the README's release highlights and required-reading count, and set the repository `VERSION` to 1.7.2.
+
 ## [1.7.1] - 2026-11-06
 
 ### Changed

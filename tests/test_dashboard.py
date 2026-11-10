@@ -263,7 +263,7 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(identity, dashboard.dashboard_identity(self.f.db))
             self.assertEqual(identity["readable_schemas"], [1, 2, 3, 4, 5])
             self.assertEqual(identity["reader_build"], checker.READER_BUILD)
-            self.assertEqual(identity["viewer_build"], 4)
+            self.assertEqual(identity["viewer_build"], 5)
             self.assertEqual(headers["Cache-Control"], "no-store")
             self.assertNotIn(str(self.f.db), body.decode())
             self.assertNotIn(str(dashboard.ROOT), body.decode())
@@ -278,12 +278,12 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(self.request(server, "/api/health")[0], 200)
         self.assertFalse(self.f.db.exists())
 
-    def test_build_four_rejects_a_build_three_viewer_without_opening_state(self):
+    def test_build_five_rejects_a_build_four_viewer_without_opening_state(self):
         identity = dashboard.dashboard_identity(self.f.db)
-        self.assertEqual(identity["viewer_build"], 4)
+        self.assertEqual(identity["viewer_build"], 5)
         response = Mock(status=200)
         response.getheader.return_value = "application/json"
-        response.read.return_value = checker.encode(dict(identity, viewer_build=3)).encode()
+        response.read.return_value = checker.encode(dict(identity, viewer_build=4)).encode()
         connection = Mock()
         connection.getresponse.return_value = response
         with patch.object(dashboard, "HTTPConnection", return_value=connection), \

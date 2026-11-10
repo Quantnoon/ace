@@ -29,7 +29,7 @@
 
   <main id="ace-dashboard" class="desk" aria-busy="true" tabindex="-1">
     <div class="page-heading">
-      <div><p class="eyebrow">ONE ACCOUNT / ONE SHARED TARGET</p><h1>Target, in view.</h1></div>
+      <div></div>
       <nav aria-label="Dashboard sections"><a href="#target">Target</a><a href="#strategies">Strategies</a><a href="#activity">Activity</a></nav>
     </div>
 
@@ -62,15 +62,6 @@
     </section>
 
     <div id="configured-workspace" hidden>
-      <section class="session-strip" aria-label="Recorded agent-session control">
-        <dl class="session-metrics">
-          <div><dt>Agent session, requested</dt><dd id="session-status">Not recorded</dd></div>
-          <div><dt>Work phase, recorded</dt><dd id="session-phase">Unavailable</dd></div>
-          <div><dt>Next wake, planned</dt><dd><time id="session-next-wake">Unavailable</time></dd><span id="session-wake-reason" class="section-note">Unavailable</span></div>
-        </dl>
-        <p id="session-reason" class="section-note">No session-control note recorded.</p>
-        <p class="section-note">Session control is separate from campaign settlement. A continue request is not proof of a running client; source age and planned wakes remain visible. This page cannot start or stop the agent.</p>
-      </section>
       <div class="overview-grid">
         <section id="target" class="target-section" aria-labelledby="target-heading">
           <div class="section-heading"><h2 id="target-heading"><span class="section-index">01</span> Approved account target</h2><span class="tag">ACCOUNT-WIDE</span></div>
