@@ -586,16 +586,9 @@ class DashboardView {
     this.text("loop-status", data.loop ? `${codeLabel(data.loop.status)} (recorded only)` : "No loop record available");
     this.text("loop-execution", "Unverified");
     const session = record(data.session) && Object.hasOwn(SESSION_LABELS, data.session.status) ? data.session : null;
-    this.text("session-status", session ? SESSION_LABELS[session.status] : "Not recorded");
-    this.node("session-status").dataset.tone = session?.status === "interrupted" ? "caution" : "muted";
-    this.text("session-phase", !session ? "Legacy / bounded workflow" : session.status !== "active" ? "Routine trading disabled"
-      : status.loss || status.target ? status.closureVerified ? "Stopped monitoring / no new risk" : "Closure / reconciliation"
-        : data.loop?.status === "active" ? "Trading / management" : "Fresh observation required");
-    this.text("session-reason", text(session?.reason, "No session-control note recorded."));
     this.text("session-id", text(session?.id));
     this.time("session-started", session?.started_at);
     this.time("session-updated", session?.updated_at);
-    this.time("session-next-wake", data.loop?.next_wake_at);
     this.text("loop-policy", text(data.loop?.policy_id));
     this.text("loop-goal", text(data.loop?.goal_id));
     this.time("loop-binding", data.loop?.binding_verified_at);
@@ -609,7 +602,6 @@ class DashboardView {
       market_closed: "Closed-market poll", latch_check: "Account-only limit check", closure: "Closure / reconciliation",
       monitor: "Stopped-account observation", session_check: "Fresh session observation" };
     this.text("loop-wake-reason", Object.hasOwn(wakeReasons, data.loop?.wake_reason) ? wakeReasons[data.loop.wake_reason] : UNAVAILABLE);
-    this.text("session-wake-reason", Object.hasOwn(wakeReasons, data.loop?.wake_reason) ? wakeReasons[data.loop.wake_reason] : UNAVAILABLE);
     this.text("loop-overdue", data.loop?.wake_overdue_seconds === 0 ? "Not overdue" : duration(data.loop?.wake_overdue_seconds));
     this.text("loop-gap", duration(data.loop?.max_gap_seconds));
     this.time("loop-observation", data.loop?.last_observation_at);

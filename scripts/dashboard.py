@@ -24,7 +24,7 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 # Advance for viewer/UI behavior changes, even without a schema or API change.
-VIEWER_BUILD = 4
+VIEWER_BUILD = 5
 PAGE_SIZE = 100
 STRATEGY_PAGE_SIZE = 20
 ASSETS = {
